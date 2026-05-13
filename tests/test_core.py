@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+import csv
+import json
+from pathlib import Path
+
+from photo_dedupe.core.ai_client import parse_chat_content, parse_score
+from photo_dedupe.core.exporter import export_ai_analysis_csv, export_files_csv, export_operations_csv
+from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
+from photo_dedupe.core.models import DuplicateGroup, FileRecord
+from photo_dedupe.core.organizer import organize_by_type, organize_files, organize_images_by_date
+from photo_dedupe.core.scanner import DuplicateScanner
+from photo_dedupe.core.storage import AppDatabase
+from photo_dedupe.core.video_hash import combine_hashes
+
+
+class DuplicateScannerTests(unittest.TestCase):
+    def test_finds_exact_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.txt").write_text("same", encoding="utf-8")
+            (root / "b.txt").write_text("same", encoding="utf-8")
+            (root / "c.txt").write_text("different", encoding="utf-8")
+
+            groups = DuplicateScanner().scan([root])
+
+        exact_groups = [group for group in groups if group.kind == "exact"]
+        self.assertEqual(len(exact_groups), 1)
+        self.assertEqual(len(exact_groups[0].records), 2)
+
+    def test_unique_target_path_adds_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "photo.jpg").write_text("x", encoding="utf-8")
+
+            target = unique_target_path(root, "photo.jpg")
+
+        self.assertEqual(target.name, "photo (1).jpg")
+
+    def test_finds_similar_images(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            Image.new("RGB", (32, 32), "red").save(root / "red.png")
+            Image.new("RGB", (32, 32), "blue").save(root / "blue.png")
+
+            groups = DuplicateScanner().scan([root])
+
+        similar_groups = [group for group in groups if group.kind == "similar"]
+        self.assertEqual(len(similar_groups), 1)
+        self.assertEqual(len(similar_groups[0].records), 2)
+
+    def test_undo_move_restores_file_and_marks_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.txt"
+            source.write_text("content", encoding="utf-8")
+            destination = root / "duplicates"
+            database = AppDatabase(root / "test.db")
+            try:
+                record = FileRecord(path=source, size=7, modified_at=source.stat().st_mtime)
+                moved = move_records([record], destination, "group", database)
+                self.assertEqual(len(moved), 1)
+                self.assertFalse(source.exists())
+
+                operation = database.list_operations()[0]
+                restored = undo_move(operation, database)
+                refreshed = database.get_operation(operation.id)
+            finally:
+                database.close()
+
+            self.assertEqual(restored, source)
+            self.assertTrue(source.exists())
+            self.assertIsNotNone(refreshed)
+            self.assertTrue(refreshed.is_undone)
+
+    def test_organize_images_by_date_uses_year_month_folder(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            target_dir = root / "organized"
+            source_dir.mkdir()
+            image_path = source_dir / "photo.png"
+            Image.new("RGB", (16, 16), "green").save(image_path)
+
+            moved = organize_images_by_date(source_dir, target_dir)
+
+        self.assertEqual(len(moved), 1)
+        self.assertIn("organized", str(moved[0][1]))
+        self.assertTrue(moved[0][1].parent.name.count("-") == 1)
+
+    def test_organize_by_type_uses_extension_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            target_dir = root / "organized"
+            source_dir.mkdir()
+            (source_dir / "note.txt").write_text("hello", encoding="utf-8")
+
+            moved = organize_by_type(source_dir, target_dir)
+
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0][1].parent.name, "txt")
+
+    def test_organize_files_day_rule(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            target_dir = root / "organized"
+            source_dir.mkdir()
+            Image.new("RGB", (16, 16), "green").save(source_dir / "photo.png")
+
+            moved = organize_files(source_dir, target_dir, "date_day")
+
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(len(moved[0][1].relative_to(target_dir).parts), 4)
+
+    def test_settings_are_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "test.db"
+            database = AppDatabase(db_path)
+            try:
+                database.set_setting("similarity_threshold", "9")
+            finally:
+                database.close()
+
+            reopened = AppDatabase(db_path)
+            try:
+                value = reopened.get_setting("similarity_threshold")
+            finally:
+                reopened.close()
+
+        self.assertEqual(value, "9")
+
+    def test_cached_file_is_reused_when_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file_path = root / "a.txt"
+            file_path.write_text("same", encoding="utf-8")
+            database = AppDatabase(root / "test.db")
+            try:
+                stat = file_path.stat()
+                record = FileRecord(path=file_path, size=stat.st_size, modified_at=stat.st_mtime, sha256="abc")
+                database.upsert_files([record])
+                cached = database.get_cached_file(file_path, stat.st_size, stat.st_mtime)
+            finally:
+                database.close()
+
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached.sha256, "abc")
+
+    def test_video_hash_cache_is_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file_path = root / "a.mp4"
+            file_path.write_text("fake video", encoding="utf-8")
+            database = AppDatabase(root / "test.db")
+            try:
+                stat = file_path.stat()
+                record = FileRecord(
+                    path=file_path,
+                    size=stat.st_size,
+                    modified_at=stat.st_mtime,
+                    video_hash=123,
+                )
+                database.upsert_files([record])
+                cached = database.get_cached_file(file_path, stat.st_size, stat.st_mtime)
+            finally:
+                database.close()
+
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached.video_hash, 123)
+
+    def test_combine_video_hashes_uses_majority_bits(self) -> None:
+        combined = combine_hashes([0b1111, 0b1100, 0b0100])
+        self.assertEqual(combined, 0b1100)
+
+    def test_scanned_files_history_and_export(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            target = root / "files.csv"
+            file_path = root / "a.txt"
+            file_path.write_text("x", encoding="utf-8")
+            database = AppDatabase(db_path)
+            try:
+                stat = file_path.stat()
+                database.upsert_files([FileRecord(path=file_path, size=stat.st_size, modified_at=stat.st_mtime)])
+                records = database.list_scanned_files()
+                export_files_csv(records, target)
+            finally:
+                database.close()
+
+            with target.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(rows[0][0], "path")
+        self.assertIn("a.txt", rows[1][0])
+
+    def test_clear_scanned_files_removes_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            file_path = root / "a.txt"
+            file_path.write_text("x", encoding="utf-8")
+            database = AppDatabase(db_path)
+            try:
+                stat = file_path.stat()
+                database.upsert_files([FileRecord(path=file_path, size=stat.st_size, modified_at=stat.st_mtime)])
+                database.clear_scanned_files()
+                records = database.list_scanned_files()
+            finally:
+                database.close()
+
+        self.assertEqual(records, [])
+
+    def test_scan_session_can_be_saved_and_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            file_a = FileRecord(path=root / "a.jpg", size=10, modified_at=1.0, width=100, height=100)
+            file_b = FileRecord(path=root / "b.jpg", size=12, modified_at=2.0, width=120, height=120)
+            groups = [DuplicateGroup(kind="similar", title="group", records=[file_a, file_b], score=0.9)]
+            database = AppDatabase(db_path)
+            try:
+                session_id = database.save_scan_session([root], groups)
+                session = database.get_latest_scan_session()
+                restored = database.load_scan_session_groups(session_id)
+            finally:
+                database.close()
+
+        self.assertIsNotNone(session)
+        self.assertEqual(session.root_paths, [root])
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0].title, "group")
+        self.assertEqual(len(restored[0].records), 2)
+
+    def test_replace_latest_scan_session_keeps_only_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            database = AppDatabase(db_path)
+            try:
+                first_groups = [DuplicateGroup(kind="exact", title="first", records=[
+                    FileRecord(path=root / "a.txt", size=1, modified_at=1.0),
+                    FileRecord(path=root / "b.txt", size=1, modified_at=2.0),
+                ])]
+                second_groups = [DuplicateGroup(kind="exact", title="second", records=[
+                    FileRecord(path=root / "c.txt", size=2, modified_at=3.0),
+                    FileRecord(path=root / "d.txt", size=2, modified_at=4.0),
+                ])]
+                database.save_scan_session([root], first_groups)
+                session_id = database.replace_latest_scan_session([root], second_groups)
+                restored = database.load_scan_session_groups(session_id)
+            finally:
+                database.close()
+
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0].title, "second")
+
+    def test_scan_session_restore_can_be_limited(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            groups = []
+            for index in range(3):
+                groups.append(
+                    DuplicateGroup(
+                        kind="exact",
+                        title=f"group-{index}",
+                        records=[
+                            FileRecord(path=root / f"{index}-a.txt", size=1, modified_at=1.0),
+                            FileRecord(path=root / f"{index}-b.txt", size=1, modified_at=2.0),
+                        ],
+                    )
+                )
+            database = AppDatabase(db_path)
+            try:
+                session_id = database.save_scan_session([root], groups)
+                total_groups = database.count_scan_session_groups(session_id)
+                restored = database.load_scan_session_groups(session_id, limit_groups=2, limit_items_per_group=2)
+            finally:
+                database.close()
+
+        self.assertEqual(total_groups, 3)
+        self.assertEqual(len(restored), 2)
+
+    def test_trash_operation_is_logged_and_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            target = root / "operations.csv"
+            source = root / "a.txt"
+            database = AppDatabase(db_path)
+            try:
+                operation_id = database.log_trash(source)
+                operation = database.get_operation(operation_id)
+                operations = database.list_operations()
+                export_operations_csv(operations, target)
+            finally:
+                database.close()
+
+            with target.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.reader(file))
+
+        self.assertIsNotNone(operation)
+        self.assertEqual(operation.action, "trash")
+        self.assertEqual(rows[1][1], "trash")
+
+    def test_ai_response_parsing_and_storage(self) -> None:
+        raw = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "这张照片主体清晰，曝光正常。保留分数：82/100。"
+                        }
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        summary = parse_chat_content(raw)
+        score = parse_score(summary)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            image_path = root / "photo.jpg"
+            image_path.write_text("fake", encoding="utf-8")
+            database = AppDatabase(db_path)
+            try:
+                database.save_ai_analysis(image_path, "vision-model", summary, score, raw)
+                records = database.list_ai_analysis()
+            finally:
+                database.close()
+
+        self.assertIn("主体清晰", summary)
+        self.assertEqual(score, 82.0)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].model, "vision-model")
+
+    def test_ai_results_can_be_filtered_and_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            target = root / "ai.csv"
+            high = root / "high.jpg"
+            low = root / "low.jpg"
+            database = AppDatabase(db_path)
+            try:
+                database.save_ai_analysis(high, "model", "good", 90.0, "{}")
+                database.save_ai_analysis(low, "model", "bad", 30.0, "{}")
+                filtered = database.list_ai_analysis(max_score=60)
+                export_ai_analysis_csv(database.list_ai_analysis(), target)
+            finally:
+                database.close()
+
+            with target.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0].path.name, "low.jpg")
+        self.assertEqual(rows[0][0], "id")
+
+
+if __name__ == "__main__":
+    unittest.main()
