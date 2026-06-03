@@ -14,6 +14,7 @@ class FileRecord:
     video_hash: int | None = None
     width: int | None = None
     height: int | None = None
+    keep_selected: bool = False
 
     @property
     def name(self) -> str:
@@ -69,3 +70,14 @@ class ScanSessionRecord:
     id: int
     created_at: float
     root_paths: list[Path]
+
+
+@dataclass(slots=True)
+class ScanSessionSummaryRecord:
+    id: int
+    created_at: float
+    root_paths: list[Path]
+    group_count: int
+    file_count: int
+    duplicate_bytes: int
+    reclaimable_bytes: int

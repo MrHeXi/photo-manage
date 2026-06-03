@@ -1,11 +1,89 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from photo_dedupe.core.file_ops import unique_target_path
 from photo_dedupe.core.hashers import is_image
+from photo_dedupe.core.hashers import is_video
+from photo_dedupe.core.storage import AppDatabase
+
+
+PHOTO_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".heic",
+    ".heif",
+    ".webp",
+    ".bmp",
+    ".gif",
+    ".tif",
+    ".tiff",
+    ".raw",
+    ".cr2",
+    ".cr3",
+    ".nef",
+    ".arw",
+    ".dng",
+}
+
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".wmv",
+    ".m4v",
+    ".mts",
+    ".3gp",
+}
+
+DOCUMENT_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".zip",
+    ".7z",
+    ".rar",
+}
+
+
+@dataclass(slots=True)
+class OrganizeTargetConfig:
+    photo_root: Path
+    video_root: Path
+    document_root: Path
+    other_root: Path
+
+
+@dataclass(slots=True)
+class OrganizePreviewItem:
+    source: Path
+    category: str
+    reason: str
+    target: Path
+
+
+def category_label(category: str) -> str:
+    labels = {
+        "photo": "照片",
+        "video": "视频",
+        "document": "文档",
+        "other": "其他",
+        "mixed": "混合",
+    }
+    return labels.get(category, category)
 
 
 def collect_files(source_root: Path) -> list[Path]:
@@ -62,6 +140,83 @@ def image_camera_model(path: Path) -> str | None:
 def safe_folder_name(value: str) -> str:
     cleaned = "".join(char if char.isalnum() or char in " ._-" else "_" for char in value).strip()
     return cleaned or "Unknown"
+
+
+def classify_file(path: Path) -> tuple[str, str]:
+    suffix = path.suffix.lower()
+    if is_image(path) or suffix in PHOTO_EXTENSIONS:
+        return "photo", "图片格式"
+    if is_video(path) or suffix in VIDEO_EXTENSIONS:
+        return "video", "视频格式"
+    if suffix in DOCUMENT_EXTENSIONS:
+        return "document", "文档/压缩包格式"
+    return "other", "未命中照片/视频/文档规则"
+
+
+def classify_group_category(paths: list[Path]) -> str:
+    categories = {classify_file(path)[0] for path in paths}
+    if len(categories) == 1:
+        return next(iter(categories))
+    return "mixed"
+
+
+def target_root_for_category(targets: OrganizeTargetConfig, category: str) -> Path:
+    if category == "photo":
+        return targets.photo_root
+    if category == "video":
+        return targets.video_root
+    if category == "document":
+        return targets.document_root
+    return targets.other_root
+
+
+def build_target_path(source: Path, targets: OrganizeTargetConfig) -> OrganizePreviewItem:
+    category, reason = classify_file(source)
+    target_root = target_root_for_category(targets, category)
+    return OrganizePreviewItem(
+        source=source,
+        category=category,
+        reason=reason,
+        target=target_root / source.name,
+    )
+
+
+def build_organize_preview(
+    roots: list[Path],
+    targets: OrganizeTargetConfig,
+    include_paths: set[Path] | None = None,
+) -> list[OrganizePreviewItem]:
+    preview: list[OrganizePreviewItem] = []
+    seen: set[Path] = set()
+    for root in roots:
+        for source in collect_files(root):
+            if include_paths is not None and source not in include_paths:
+                continue
+            if source in seen:
+                continue
+            seen.add(source)
+            preview.append(build_target_path(source, targets))
+    preview.sort(key=lambda item: (item.category, str(item.source).lower()))
+    return preview
+
+
+def execute_organize_preview(
+    preview: list[OrganizePreviewItem],
+    database: AppDatabase | None = None,
+) -> list[tuple[Path, Path]]:
+    moved: list[tuple[Path, Path]] = []
+    for item in preview:
+        if not item.source.exists():
+            continue
+        item.target.parent.mkdir(parents=True, exist_ok=True)
+        target = unique_target_path(item.target.parent, item.target.name)
+        if item.source.resolve() == target.resolve():
+            continue
+        shutil.move(str(item.source), str(target))
+        if database is not None:
+            database.log_move(item.source, target)
+        moved.append((item.source, target))
+    return moved
 
 
 def move_file(source: Path, target_dir: Path) -> tuple[Path, Path] | None:

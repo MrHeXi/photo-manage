@@ -7,10 +7,19 @@ import json
 from pathlib import Path
 
 from photo_dedupe.core.ai_client import parse_chat_content, parse_score
+from photo_dedupe.core.directory_index import build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
-from photo_dedupe.core.organizer import organize_by_type, organize_files, organize_images_by_date
+from photo_dedupe.core.organizer import (
+    OrganizeTargetConfig,
+    build_organize_preview,
+    category_label,
+    execute_organize_preview,
+    organize_by_type,
+    organize_files,
+    organize_images_by_date,
+)
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import combine_hashes
@@ -131,6 +140,98 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(len(moved), 1)
         self.assertEqual(len(moved[0][1].relative_to(target_dir).parts), 4)
 
+    def test_build_organize_preview_routes_by_category(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            (source_dir / "photo.jpg").write_text("x", encoding="utf-8")
+            (source_dir / "movie.mp4").write_text("x", encoding="utf-8")
+            (source_dir / "notes.pdf").write_text("x", encoding="utf-8")
+            (source_dir / "data.bin").write_text("x", encoding="utf-8")
+
+            targets = OrganizeTargetConfig(
+                photo_root=root / "photos",
+                video_root=root / "videos",
+                document_root=root / "docs",
+                other_root=root / "others",
+            )
+
+            preview = build_organize_preview([source_dir], targets)
+
+        mapped = {item.source.name: item for item in preview}
+        self.assertEqual(mapped["photo.jpg"].target.parent.name, "photos")
+        self.assertEqual(mapped["movie.mp4"].target.parent.name, "videos")
+        self.assertEqual(mapped["notes.pdf"].target.parent.name, "docs")
+        self.assertEqual(mapped["data.bin"].target.parent.name, "others")
+        self.assertEqual(category_label(mapped["photo.jpg"].category), "照片")
+
+    def test_build_organize_preview_can_limit_to_keep_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            keep_file = source_dir / "keep.jpg"
+            skip_file = source_dir / "skip.jpg"
+            keep_file.write_text("x", encoding="utf-8")
+            skip_file.write_text("x", encoding="utf-8")
+
+            targets = OrganizeTargetConfig(
+                photo_root=root / "photos",
+                video_root=root / "videos",
+                document_root=root / "docs",
+                other_root=root / "others",
+            )
+
+            preview = build_organize_preview([source_dir], targets, include_paths={keep_file})
+
+        self.assertEqual([item.source.name for item in preview], ["keep.jpg"])
+
+    def test_execute_organize_preview_moves_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "clip.mp4"
+            source.write_text("x", encoding="utf-8")
+            preview = [
+                build_organize_preview(
+                    [source],
+                    OrganizeTargetConfig(
+                        photo_root=root / "photos",
+                        video_root=root / "videos",
+                        document_root=root / "docs",
+                        other_root=root / "others",
+                    ),
+                )[0]
+            ]
+
+            moved = execute_organize_preview(preview)
+            moved_target = moved[0][1]
+            source_exists = source.exists()
+            target_exists = moved_target.exists()
+
+        self.assertEqual(len(moved), 1)
+        self.assertFalse(source_exists)
+        self.assertTrue(target_exists)
+
+    def test_build_directory_duplicate_index_groups_by_directory(self) -> None:
+        root = Path("D:/library")
+        file_a = FileRecord(path=root / "a" / "one.jpg", size=1, modified_at=1.0)
+        file_b = FileRecord(path=root / "b" / "one-copy.jpg", size=1, modified_at=2.0)
+        file_c = FileRecord(path=root / "c" / "two.jpg", size=1, modified_at=3.0)
+        groups = [
+            DuplicateGroup(kind="exact", title="g1", records=[file_a, file_b]),
+            DuplicateGroup(kind="similar", title="g2", records=[file_a, file_c]),
+        ]
+
+        file_index, directory_index = build_directory_duplicate_index(groups)
+
+        self.assertEqual(file_index[file_a.path].group_indices, [0, 1])
+        self.assertEqual(
+            {path.name for path in file_index[file_a.path].peer_paths},
+            {"one-copy.jpg", "two.jpg"},
+        )
+        self.assertEqual([path.name for path in directory_index[file_a.path.parent]], ["one.jpg"])
+
     def test_settings_are_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "test.db"
@@ -235,7 +336,7 @@ class DuplicateScannerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             db_path = root / "test.db"
-            file_a = FileRecord(path=root / "a.jpg", size=10, modified_at=1.0, width=100, height=100)
+            file_a = FileRecord(path=root / "a.jpg", size=10, modified_at=1.0, width=100, height=100, keep_selected=True)
             file_b = FileRecord(path=root / "b.jpg", size=12, modified_at=2.0, width=120, height=120)
             groups = [DuplicateGroup(kind="similar", title="group", records=[file_a, file_b], score=0.9)]
             database = AppDatabase(db_path)
@@ -251,6 +352,8 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0].title, "group")
         self.assertEqual(len(restored[0].records), 2)
+        self.assertTrue(restored[0].records[0].keep_selected)
+        self.assertFalse(restored[0].records[1].keep_selected)
 
     def test_replace_latest_scan_session_keeps_only_latest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -301,6 +404,100 @@ class DuplicateScannerTests(unittest.TestCase):
 
         self.assertEqual(total_groups, 3)
         self.assertEqual(len(restored), 2)
+
+    def test_scan_session_restore_can_use_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            groups = []
+            for index in range(4):
+                groups.append(
+                    DuplicateGroup(
+                        kind="exact",
+                        title=f"group-{index}",
+                        records=[
+                            FileRecord(path=root / f"{index}-a.txt", size=1, modified_at=1.0),
+                            FileRecord(path=root / f"{index}-b.txt", size=1, modified_at=2.0),
+                        ],
+                    )
+                )
+            database = AppDatabase(db_path)
+            try:
+                session_id = database.save_scan_session([root], groups)
+                restored = database.load_scan_session_groups(session_id, limit_groups=2, offset_groups=2)
+            finally:
+                database.close()
+
+        self.assertEqual([group.title for group in restored], ["group-2", "group-3"])
+
+    def test_list_scan_sessions_includes_summary_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            groups = [
+                DuplicateGroup(
+                    kind="exact",
+                    title="group-1",
+                    records=[
+                        FileRecord(path=root / "a.txt", size=10, modified_at=1.0),
+                        FileRecord(path=root / "b.txt", size=10, modified_at=2.0),
+                    ],
+                )
+            ]
+            database = AppDatabase(db_path)
+            try:
+                database.save_scan_session([root], groups)
+                sessions = database.list_scan_sessions()
+            finally:
+                database.close()
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].group_count, 1)
+        self.assertEqual(sessions[0].file_count, 2)
+        self.assertEqual(sessions[0].duplicate_bytes, 20)
+        self.assertEqual(sessions[0].reclaimable_bytes, 10)
+
+    def test_delete_single_scan_session_keeps_other_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "test.db"
+            database = AppDatabase(db_path)
+            try:
+                first_id = database.save_scan_session(
+                    [root / "a"],
+                    [
+                        DuplicateGroup(
+                            kind="exact",
+                            title="first",
+                            records=[
+                                FileRecord(path=root / "a1.txt", size=10, modified_at=1.0),
+                                FileRecord(path=root / "a2.txt", size=10, modified_at=2.0),
+                            ],
+                        )
+                    ],
+                )
+                second_id = database.save_scan_session(
+                    [root / "b"],
+                    [
+                        DuplicateGroup(
+                            kind="exact",
+                            title="second",
+                            records=[
+                                FileRecord(path=root / "b1.txt", size=20, modified_at=1.0),
+                                FileRecord(path=root / "b2.txt", size=20, modified_at=2.0),
+                            ],
+                        )
+                    ],
+                )
+                database.delete_scan_session(second_id)
+                sessions = database.list_scan_sessions(limit=10)
+                restored_first = database.load_scan_session_groups(first_id)
+            finally:
+                database.close()
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].id, first_id)
+        self.assertEqual(restored_first[0].title, "first")
 
     def test_trash_operation_is_logged_and_exported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

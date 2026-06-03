@@ -5,7 +5,14 @@ import sqlite3
 import time
 from pathlib import Path
 
-from photo_dedupe.core.models import AiAnalysisRecord, DuplicateGroup, FileRecord, OperationRecord, ScanSessionRecord
+from photo_dedupe.core.models import (
+    AiAnalysisRecord,
+    DuplicateGroup,
+    FileRecord,
+    OperationRecord,
+    ScanSessionRecord,
+    ScanSessionSummaryRecord,
+)
 
 
 def default_database_path() -> Path:
@@ -18,7 +25,6 @@ def default_database_path() -> Path:
     return root / "photo_manage.db"
 
 
-MAX_PERSISTED_GROUPS = 2000
 MAX_PERSISTED_ITEMS_PER_GROUP = 200
 
 
@@ -98,6 +104,7 @@ class AppDatabase:
                 video_hash TEXT,
                 width INTEGER,
                 height INTEGER,
+                keep_selected INTEGER NOT NULL DEFAULT 0,
                 sort_index INTEGER NOT NULL,
                 FOREIGN KEY(group_id) REFERENCES scan_groups(id) ON DELETE CASCADE
             );
@@ -116,6 +123,14 @@ class AppDatabase:
         }
         if "video_hash" not in file_columns:
             self.connection.execute("ALTER TABLE files ADD COLUMN video_hash TEXT")
+        scan_group_item_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(scan_group_items)").fetchall()
+        }
+        if "keep_selected" not in scan_group_item_columns:
+            self.connection.execute(
+                "ALTER TABLE scan_group_items ADD COLUMN keep_selected INTEGER NOT NULL DEFAULT 0"
+            )
         self.connection.commit()
 
     def upsert_files(self, records: list[FileRecord]) -> None:
@@ -352,8 +367,7 @@ class AppDatabase:
             ("|".join(str(root) for root in roots), now),
         )
         session_id = int(cursor.lastrowid)
-        persisted_groups = groups[:MAX_PERSISTED_GROUPS]
-        for group_index, group in enumerate(persisted_groups):
+        for group_index, group in enumerate(groups):
             group_cursor = self.connection.execute(
                 """
                 INSERT INTO scan_groups (session_id, kind, title, score, sort_index)
@@ -366,8 +380,8 @@ class AppDatabase:
                 self.connection.execute(
                     """
                     INSERT INTO scan_group_items (
-                        group_id, path, size, modified_at, sha256, image_hash, video_hash, width, height, sort_index
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        group_id, path, size, modified_at, sha256, image_hash, video_hash, width, height, keep_selected, sort_index
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         group_id,
@@ -379,6 +393,7 @@ class AppDatabase:
                         str(record.video_hash) if record.video_hash is not None else None,
                         record.width,
                         record.height,
+                        1 if record.keep_selected else 0,
                         item_index,
                     ),
                 )
@@ -409,17 +424,37 @@ class AppDatabase:
             root_paths=root_paths,
         )
 
+    def get_scan_session(self, session_id: int) -> ScanSessionRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT id, root_paths, created_at
+            FROM scan_sessions
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        root_paths = [Path(item) for item in str(row["root_paths"]).split("|") if item]
+        return ScanSessionRecord(
+            id=int(row["id"]),
+            created_at=float(row["created_at"]),
+            root_paths=root_paths,
+        )
+
     def load_scan_session_groups(
         self,
         session_id: int,
         limit_groups: int | None = None,
+        offset_groups: int = 0,
         limit_items_per_group: int | None = None,
     ) -> list[DuplicateGroup]:
         group_limit_sql = ""
         group_params: list[object] = [session_id]
         if limit_groups is not None:
-            group_limit_sql = "LIMIT ?"
+            group_limit_sql = "LIMIT ? OFFSET ?"
             group_params.append(limit_groups)
+            group_params.append(max(offset_groups, 0))
         group_rows = self.connection.execute(
             f"""
             SELECT id, kind, title, score
@@ -439,7 +474,7 @@ class AppDatabase:
                 item_params.append(limit_items_per_group)
             item_rows = self.connection.execute(
                 f"""
-                SELECT path, size, modified_at, sha256, image_hash, video_hash, width, height
+                SELECT path, size, modified_at, sha256, image_hash, video_hash, width, height, keep_selected
                 FROM scan_group_items
                 WHERE group_id = ?
                 ORDER BY sort_index ASC, id ASC
@@ -457,6 +492,7 @@ class AppDatabase:
                     video_hash=int(item["video_hash"]) if item["video_hash"] is not None else None,
                     width=int(item["width"]) if item["width"] is not None else None,
                     height=int(item["height"]) if item["height"] is not None else None,
+                    keep_selected=bool(int(item["keep_selected"])) if item["keep_selected"] is not None else False,
                 )
                 for item in item_rows
             ]
@@ -477,6 +513,61 @@ class AppDatabase:
             (session_id,),
         ).fetchone()
         return int(row[0]) if row is not None else 0
+
+    def list_scan_sessions(self, limit: int = 50) -> list[ScanSessionSummaryRecord]:
+        session_rows = self.connection.execute(
+            """
+            SELECT id, root_paths, created_at
+            FROM scan_sessions
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        sessions: list[ScanSessionSummaryRecord] = []
+        for row in session_rows:
+            session_id = int(row["id"])
+            root_paths = [Path(item) for item in str(row["root_paths"]).split("|") if item]
+            group_row = self.connection.execute(
+                "SELECT COUNT(*) FROM scan_groups WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            file_row = self.connection.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(i.size), 0)
+                FROM scan_group_items i
+                JOIN scan_groups g ON g.id = i.group_id
+                WHERE g.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            reclaimable_row = self.connection.execute(
+                """
+                SELECT COALESCE(SUM(group_sum - group_max), 0)
+                FROM (
+                    SELECT SUM(i.size) AS group_sum, MAX(i.size) AS group_max
+                    FROM scan_group_items i
+                    JOIN scan_groups g ON g.id = i.group_id
+                    WHERE g.session_id = ?
+                    GROUP BY i.group_id
+                )
+                """,
+                (session_id,),
+            ).fetchone()
+            sessions.append(
+                ScanSessionSummaryRecord(
+                    id=session_id,
+                    created_at=float(row["created_at"]),
+                    root_paths=root_paths,
+                    group_count=int(group_row[0]) if group_row is not None else 0,
+                    file_count=int(file_row[0]) if file_row is not None and file_row[0] is not None else 0,
+                    duplicate_bytes=int(file_row[1]) if file_row is not None and file_row[1] is not None else 0,
+                    reclaimable_bytes=(
+                        int(reclaimable_row[0]) if reclaimable_row is not None and reclaimable_row[0] is not None else 0
+                    ),
+                )
+            )
+        return sessions
 
     def clear_scan_sessions(self) -> None:
         self.connection.execute("DELETE FROM scan_group_items")
