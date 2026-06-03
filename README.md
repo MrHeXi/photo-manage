@@ -1,4 +1,4 @@
-# Photo Manage GPT
+# Photo Manage
 
 一个优先适配 Windows 的照片 / 文件整理去重桌面应用。
 
