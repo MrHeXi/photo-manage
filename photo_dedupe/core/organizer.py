@@ -8,6 +8,7 @@ from pathlib import Path
 from photo_dedupe.core.file_ops import unique_target_path
 from photo_dedupe.core.hashers import is_image
 from photo_dedupe.core.hashers import is_video
+from photo_dedupe.core.selection import is_under_any, normalize_path
 from photo_dedupe.core.storage import AppDatabase
 
 
@@ -86,10 +87,22 @@ def category_label(category: str) -> str:
     return labels.get(category, category)
 
 
-def collect_files(source_root: Path) -> list[Path]:
+def collect_files(source_root: Path, exclude_roots: set[Path] | None = None) -> list[Path]:
     if not source_root.exists():
         return []
-    return [source_root] if source_root.is_file() else [path for path in source_root.rglob("*") if path.is_file()]
+    excluded = {normalize_path(root) for root in (exclude_roots or set())}
+
+    def excluded_path(path: Path) -> bool:
+        normalized = normalize_path(path)
+        return any(normalized == root or root in normalized.parents for root in excluded)
+
+    if source_root.is_file():
+        return [] if excluded_path(source_root) else [source_root]
+    return [
+        path
+        for path in source_root.rglob("*")
+        if path.is_file() and not excluded_path(path)
+    ]
 
 
 def image_taken_at(path: Path) -> datetime | None:
@@ -185,11 +198,12 @@ def build_organize_preview(
     roots: list[Path],
     targets: OrganizeTargetConfig,
     include_paths: set[Path] | None = None,
+    exclude_roots: set[Path] | None = None,
 ) -> list[OrganizePreviewItem]:
     preview: list[OrganizePreviewItem] = []
     seen: set[Path] = set()
     for root in roots:
-        for source in collect_files(root):
+        for source in collect_files(root, exclude_roots=exclude_roots):
             if include_paths is not None and source not in include_paths:
                 continue
             if source in seen:
@@ -232,9 +246,12 @@ def organize_images_by_date(
     source_root: Path,
     destination_root: Path,
     granularity: str = "month",
+    exclude_roots: set[Path] | None = None,
 ) -> list[tuple[Path, Path]]:
     moved: list[tuple[Path, Path]] = []
-    for source in collect_files(source_root):
+    excluded = set(exclude_roots or set())
+    excluded.add(destination_root)
+    for source in collect_files(source_root, exclude_roots=excluded):
         if not is_image(source):
             continue
         taken_at = image_taken_at(source)
@@ -250,9 +267,15 @@ def organize_images_by_date(
     return moved
 
 
-def organize_by_type(source_root: Path, destination_root: Path) -> list[tuple[Path, Path]]:
+def organize_by_type(
+    source_root: Path,
+    destination_root: Path,
+    exclude_roots: set[Path] | None = None,
+) -> list[tuple[Path, Path]]:
     moved: list[tuple[Path, Path]] = []
-    for source in collect_files(source_root):
+    excluded = set(exclude_roots or set())
+    excluded.add(destination_root)
+    for source in collect_files(source_root, exclude_roots=excluded):
         suffix = source.suffix.lower().lstrip(".") or "no-extension"
         result = move_file(source, destination_root / safe_folder_name(suffix))
         if result:
@@ -260,9 +283,15 @@ def organize_by_type(source_root: Path, destination_root: Path) -> list[tuple[Pa
     return moved
 
 
-def organize_images_by_camera(source_root: Path, destination_root: Path) -> list[tuple[Path, Path]]:
+def organize_images_by_camera(
+    source_root: Path,
+    destination_root: Path,
+    exclude_roots: set[Path] | None = None,
+) -> list[tuple[Path, Path]]:
     moved: list[tuple[Path, Path]] = []
-    for source in collect_files(source_root):
+    excluded = set(exclude_roots or set())
+    excluded.add(destination_root)
+    for source in collect_files(source_root, exclude_roots=excluded):
         if not is_image(source):
             continue
         camera = image_camera_model(source) or "Unknown Camera"
@@ -272,11 +301,16 @@ def organize_images_by_camera(source_root: Path, destination_root: Path) -> list
     return moved
 
 
-def organize_files(source_root: Path, destination_root: Path, rule: str) -> list[tuple[Path, Path]]:
+def organize_files(
+    source_root: Path,
+    destination_root: Path,
+    rule: str,
+    exclude_roots: set[Path] | None = None,
+) -> list[tuple[Path, Path]]:
     if rule == "date_day":
-        return organize_images_by_date(source_root, destination_root, granularity="day")
+        return organize_images_by_date(source_root, destination_root, granularity="day", exclude_roots=exclude_roots)
     if rule == "type":
-        return organize_by_type(source_root, destination_root)
+        return organize_by_type(source_root, destination_root, exclude_roots=exclude_roots)
     if rule == "camera":
-        return organize_images_by_camera(source_root, destination_root)
-    return organize_images_by_date(source_root, destination_root, granularity="month")
+        return organize_images_by_camera(source_root, destination_root, exclude_roots=exclude_roots)
+    return organize_images_by_date(source_root, destination_root, granularity="month", exclude_roots=exclude_roots)

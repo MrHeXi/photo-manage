@@ -55,7 +55,14 @@ from photo_dedupe.core.organizer import (
     organize_files,
 )
 from photo_dedupe.core.scanner import DuplicateScanner
+from photo_dedupe.core.selection import (
+    build_processing_plan,
+    choose_keep_records,
+    is_under_any,
+    normalize_path,
+)
 from photo_dedupe.core.storage import AppDatabase
+from photo_dedupe.core.video_hash import video_hash_available
 
 
 def format_size(size: int) -> str:
@@ -84,11 +91,20 @@ class ScanWorker(QThread):
     finished_groups = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, roots: list[Path], database_path: Path, similarity_threshold: int) -> None:
+    def __init__(
+        self,
+        roots: list[Path],
+        database_path: Path,
+        similarity_threshold: int,
+        same_ratio_only: bool = False,
+        same_resolution_only: bool = False,
+    ) -> None:
         super().__init__()
         self.roots = roots
         self.database_path = database_path
         self.similarity_threshold = similarity_threshold
+        self.same_ratio_only = same_ratio_only
+        self.same_resolution_only = same_resolution_only
         self._cancel_requested = False
 
     def request_cancel(self) -> None:
@@ -104,6 +120,8 @@ class ScanWorker(QThread):
             groups = scanner.scan(
                 self.roots,
                 image_similarity_threshold=self.similarity_threshold,
+                image_same_ratio_only=self.same_ratio_only,
+                image_same_resolution_only=self.same_resolution_only,
                 progress=self.progress_changed.emit,
                 should_cancel=self.should_cancel,
             )
@@ -207,6 +225,7 @@ class MainWindow(QMainWindow):
         self.keep_state_dirty = False
         self.updating_keep_checks = False
         self.manual_keep_group_keys: set[str] = set()
+        self.protected_roots: set[Path] = set()
         self.file_duplicate_links: dict[Path, FileDuplicateLink] = {}
         self.directory_duplicate_files: dict[Path, list[Path]] = {}
         self.restored_session_id: int | None = None
@@ -239,13 +258,14 @@ class MainWindow(QMainWindow):
         self.directory_detail_table = QTableWidget(0, 4)
         self.directory_hint_label = QLabel("")
         self.thumbnail_list = QListWidget()
-        self.file_table = QTableWidget(0, 7)
+        self.file_table = QTableWidget(0, 8)
         self.operations_table = QTableWidget(0, 6)
         self.session_table = QTableWidget(0, 7)
         self.history_table = QTableWidget(0, 7)
         self.ai_table = QTableWidget(0, 5)
         self.organize_preview_table = QTableWidget(0, 4)
         self.action_combo = QComboBox()
+        self.bulk_keep_rule_combo = QComboBox()
         self.organize_rule_combo = QComboBox()
         self.strategy_combo = QComboBox()
         self.ai_provider_combo = QComboBox()
@@ -255,6 +275,9 @@ class MainWindow(QMainWindow):
         self.session_sort_combo = QComboBox()
         self.session_range_combo = QComboBox()
         self.organize_keep_only_checkbox = QCheckBox("仅整理重复组中的保留文件")
+        self.same_ratio_checkbox = QCheckBox("仅同宽高比")
+        self.same_resolution_checkbox = QCheckBox("仅同分辨率")
+        self.rotate_hint_checkbox = QCheckBox("提示旋转/翻转相似图")
         self.organize_photo_input = QLineEdit()
         self.organize_video_input = QLineEdit()
         self.organize_document_input = QLineEdit()
@@ -268,7 +291,8 @@ class MainWindow(QMainWindow):
         self.group_status_label = QLabel("")
         self.session_summary_label = QLabel("")
         self.organize_help_label = QLabel("")
-        self.retention_hint_label = QLabel("勾选的文件会保留在原位置；未勾选的文件会按下方处理方式移动。")
+        self.retention_hint_label = QLabel("勾选的文件会保留在原位置；保护目录内文件不会被批量移动或回收。")
+        self.bulk_rule_hint_label = QLabel("")
         self.scan_button = QPushButton("开始扫描")
         self.cancel_button = QPushButton("停止扫描")
         self.preview_label = QLabel("选择图片以预览")
@@ -310,7 +334,41 @@ class MainWindow(QMainWindow):
 
     def _finish_startup(self) -> None:
         self.group_status_label.setText("正在尝试恢复最近一次扫描结果...")
+        health_notes = ["正在加载最近一次扫描缓存"]
+        if not video_hash_available():
+            health_notes.append("未检测到 ffmpeg，相似视频检测会自动跳过")
+        self.status_label.setText("；".join(health_notes))
         self.start_restore_session()
+
+    def _folder_path_from_item(self, item: QListWidgetItem) -> Path:
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return Path(str(value if value is not None else item.text().replace(" [保护]", "")))
+
+    def _folder_paths(self) -> list[Path]:
+        return [self._folder_path_from_item(self.folder_list.item(index)) for index in range(self.folder_list.count())]
+
+    def _add_folder_item(self, path: Path, protected: bool | None = None) -> None:
+        normalized = normalize_path(path)
+        is_protected = normalized in {normalize_path(root) for root in self.protected_roots} if protected is None else protected
+        if is_protected:
+            self.protected_roots.add(normalized)
+        item = QListWidgetItem(f"{path} [保护]" if is_protected else str(path))
+        item.setData(Qt.ItemDataRole.UserRole, str(path))
+        if is_protected:
+            item.setForeground(QColor("#1a7f37"))
+            item.setToolTip("保护目录：批量处理会跳过此目录内文件。")
+        self.folder_list.addItem(item)
+
+    def _refresh_folder_item_labels(self) -> None:
+        protected = {normalize_path(path) for path in self.protected_roots}
+        for index in range(self.folder_list.count()):
+            item = self.folder_list.item(index)
+            path = self._folder_path_from_item(item)
+            is_protected = normalize_path(path) in protected
+            item.setText(f"{path} [保护]" if is_protected else str(path))
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            item.setForeground(QColor("#1a7f37") if is_protected else QColor("#24292f"))
+            item.setToolTip("保护目录：批量处理会跳过此目录内文件。" if is_protected else str(path))
 
     def start_restore_session(self, session_id: int | None = None, offset_groups: int = 0) -> None:
         if self.restore_worker and self.restore_worker.isRunning():
@@ -337,73 +395,9 @@ class MainWindow(QMainWindow):
         )
         self.start_restore_session(session_id=self.restored_session_id, offset_groups=self.restored_loaded_groups)
 
-    def on_restore_finished(self, session, payload) -> None:
-        if session is None:
-            self.status_label.setText("准备就绪")
-            return
-        groups = payload["groups"]
-        total_groups = int(payload["total_groups"])
-        self.current_roots = session.root_paths
-        existing = {self.folder_list.item(index).text() for index in range(self.folder_list.count())}
-        for root in session.root_paths:
-            root_text = str(root)
-            if root_text not in existing:
-                self.folder_list.addItem(root_text)
-                existing.add(root_text)
-        if groups:
-            self.on_scan_finished(groups, restored=True)
-            if total_groups > len(groups):
-                self.status_label.setText(
-                    f"已恢复最近扫描的前 {len(groups)} 组，共 {total_groups} 组。建议重新扫描以获取完整结果。"
-                )
-        else:
-            self.status_label.setText("准备就绪")
-
     def on_restore_failed(self, message: str) -> None:
         self.status_label.setText("启动恢复失败")
-
-    def on_restore_finished(self, session, payload) -> None:  # type: ignore[override]
-        if session is None:
-            self.status_label.setText("准备就绪")
-            self.load_more_groups_button.setEnabled(False)
-            return
-
-        groups = payload["groups"]
-        total_groups = int(payload["total_groups"])
-        offset_groups = int(payload.get("offset_groups", 0))
-        self.current_roots = session.root_paths
-        self.restored_session_id = session.id
-        self.restored_total_groups = total_groups
-
-        existing = {self.folder_list.item(index).text() for index in range(self.folder_list.count())}
-        for root in session.root_paths:
-            root_text = str(root)
-            if root_text not in existing:
-                self.folder_list.addItem(root_text)
-                existing.add(root_text)
-
-        if groups:
-            if offset_groups == 0:
-                self.on_scan_finished(groups, restored=True)
-            else:
-                self.on_scan_finished([*self.groups, *groups], restored=True)
-
-            self.restored_loaded_groups = min(offset_groups + len(groups), total_groups)
-            if self.restored_loaded_groups < total_groups:
-                self.load_more_groups_button.setEnabled(True)
-                self.load_more_groups_button.setText(
-                    f"继续加载更多 ({self.restored_loaded_groups}/{self.restored_total_groups})"
-                )
-                self.status_label.setText(
-                    f"已恢复 {self.restored_loaded_groups}/{self.restored_total_groups} 组，可继续加载，无需重新扫描。"
-                )
-            else:
-                self.load_more_groups_button.setEnabled(False)
-                self.load_more_groups_button.setText("已全部加载")
-                self.status_label.setText(f"已恢复全部 {self.restored_total_groups} 组已保存结果。")
-        else:
-            self.status_label.setText("准备就绪")
-            self.load_more_groups_button.setEnabled(False)
+        self.group_status_label.setText(f"历史结果加载失败：{message}")
 
     def on_restore_finished(self, session, payload) -> None:  # type: ignore[override]
         if session is None:
@@ -419,11 +413,11 @@ class MainWindow(QMainWindow):
         self.restored_session_id = session.id
         self.restored_total_groups = total_groups
 
-        existing = {self.folder_list.item(index).text() for index in range(self.folder_list.count())}
+        existing = {str(path) for path in self._folder_paths()}
         for root in session.root_paths:
             root_text = str(root)
             if root_text not in existing:
-                self.folder_list.addItem(root_text)
+                self._add_folder_item(root)
                 existing.add(root_text)
 
         if groups:
@@ -460,14 +454,28 @@ class MainWindow(QMainWindow):
         add_button.clicked.connect(self.add_folder)
         remove_button = QPushButton("移除")
         remove_button.clicked.connect(self.remove_folder)
+        protect_button = QPushButton("设为保护目录")
+        protect_button.clicked.connect(self.toggle_protected_folder)
         dest_button = QPushButton("目标目录")
         dest_button.clicked.connect(self.choose_destination)
         self.scan_button.clicked.connect(self.start_scan)
         self.cancel_button.clicked.connect(self.cancel_scan)
         self.cancel_button.setEnabled(False)
-        move_button = QPushButton("移动未勾选项")
+        move_button = QPushButton("处理当前筛选结果")
         move_button.clicked.connect(self.move_unchecked)
         self.action_combo.addItems(["移动到目标目录", "移动到回收站"])
+        self.bulk_keep_rule_combo.addItems(
+            [
+                "保留保护目录内文件",
+                "保留最高质量",
+                "保留最大文件",
+                "保留最新修改",
+                "保留最高分辨率",
+                "保留路径最短",
+                "保留路径最深",
+                "保留非副本命名",
+            ]
+        )
         self.organize_rule_combo.addItems(["按拍摄年月", "按拍摄日期", "按文件类型", "按相机型号"])
         organize_button = QPushButton("执行整理规则")
         organize_button.clicked.connect(self.organize_by_rule)
@@ -514,6 +522,7 @@ class MainWindow(QMainWindow):
         folder_buttons = QHBoxLayout()
         folder_buttons.addWidget(add_button)
         folder_buttons.addWidget(remove_button)
+        folder_buttons.addWidget(protect_button)
 
         left = QWidget()
         left.setObjectName("Sidebar")
@@ -527,6 +536,9 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.destination_label)
         left_layout.addWidget(QLabel("图片相似阈值"))
         left_layout.addWidget(self.threshold_spin)
+        left_layout.addWidget(self.same_ratio_checkbox)
+        left_layout.addWidget(self.same_resolution_checkbox)
+        left_layout.addWidget(self.rotate_hint_checkbox)
         left_layout.addWidget(QLabel("默认保留策略"))
         left_layout.addWidget(self.strategy_combo)
         left_layout.addWidget(self.scan_button)
@@ -554,6 +566,8 @@ class MainWindow(QMainWindow):
         self.group_max_size_input.textChanged.connect(self.refresh_group_list)
         self.group_max_size_unit_combo.addItems(["MB", "GB"])
         self.group_max_size_unit_combo.currentIndexChanged.connect(self.refresh_group_list)
+        clear_group_filters_button = QPushButton("清空分组筛选")
+        clear_group_filters_button.clicked.connect(self.clear_group_filters)
         self.load_more_groups_button.clicked.connect(self.load_more_restored_groups)
         self.load_more_groups_button.setEnabled(False)
         self.group_list.currentItemChanged.connect(self.populate_group)
@@ -610,12 +624,13 @@ class MainWindow(QMainWindow):
         group_size_filter_row.addWidget(self.group_max_size_input)
         group_size_filter_row.addWidget(self.group_max_size_unit_combo)
         groups_layout.addLayout(group_size_filter_row)
+        groups_layout.addWidget(clear_group_filters_button)
         groups_layout.addWidget(self.load_more_groups_button)
         groups_layout.addWidget(self.group_stack)
 
-        self.file_table.setHorizontalHeaderLabels(["保留", "文件名", "大小", "修改时间", "尺寸", "相似度", "路径"])
+        self.file_table.setHorizontalHeaderLabels(["保留", "保护", "文件名", "大小", "修改时间", "尺寸", "相似度", "路径"])
         self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.file_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.file_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         self.file_table.setAlternatingRowColors(True)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.file_table.verticalHeader().setDefaultSectionSize(30)
@@ -645,6 +660,18 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.file_table)
         right_layout.addWidget(self.thumbnail_list)
         right_layout.addWidget(self.retention_hint_label)
+        self.bulk_rule_hint_label.setWordWrap(True)
+        right_layout.addWidget(QLabel("批量保留规则"))
+        right_layout.addWidget(self.bulk_keep_rule_combo)
+        bulk_rule_actions = QHBoxLayout()
+        preview_rule_button = QPushButton("预览应用规则")
+        preview_rule_button.clicked.connect(self.preview_bulk_keep_rule)
+        apply_rule_button = QPushButton("应用到当前筛选结果")
+        apply_rule_button.clicked.connect(self.apply_bulk_keep_rule)
+        bulk_rule_actions.addWidget(preview_rule_button)
+        bulk_rule_actions.addWidget(apply_rule_button)
+        right_layout.addLayout(bulk_rule_actions)
+        right_layout.addWidget(self.bulk_rule_hint_label)
         right_layout.addWidget(self.action_combo)
         right_layout.addWidget(move_button)
         right_layout.addWidget(self.preview_stack)
@@ -972,15 +999,34 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
         folders = dialog.selectedFiles()
-        existing = {self.folder_list.item(index).text() for index in range(self.folder_list.count())}
+        existing = {str(path) for path in self._folder_paths()}
         for folder in folders:
             if folder not in existing:
-                self.folder_list.addItem(folder)
+                self._add_folder_item(Path(folder))
                 existing.add(folder)
 
     def remove_folder(self) -> None:
         for item in self.folder_list.selectedItems():
+            self.protected_roots.discard(normalize_path(self._folder_path_from_item(item)))
             self.folder_list.takeItem(self.folder_list.row(item))
+        self._save_settings()
+
+    def toggle_protected_folder(self) -> None:
+        selected_items = self.folder_list.selectedItems()
+        if not selected_items:
+            QMessageBox.information(self, "没有选中目录", "请先在扫描目录列表中选中一个或多个目录。")
+            return
+        protected = {normalize_path(path) for path in self.protected_roots}
+        for item in selected_items:
+            path = normalize_path(self._folder_path_from_item(item))
+            if path in protected:
+                protected.remove(path)
+            else:
+                protected.add(path)
+        self.protected_roots = protected
+        self._refresh_folder_item_labels()
+        self._save_settings()
+        self.status_label.setText(f"保护目录已更新：{len(self.protected_roots)} 个")
 
     def choose_destination(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择重复文件移动目标", str(self.destination))
@@ -1020,6 +1066,14 @@ class MainWindow(QMainWindow):
         self.ai_model_input.setText(self.database.get_setting("ai_model", ""))
         self.ai_key_input.setText(self.database.get_setting("ai_api_key", ""))
         self.organize_keep_only_checkbox.setChecked(self.database.get_setting("organize_keep_only", "0") == "1")
+        self.same_ratio_checkbox.setChecked(self.database.get_setting("similar_same_ratio", "0") == "1")
+        self.same_resolution_checkbox.setChecked(self.database.get_setting("similar_same_resolution", "0") == "1")
+        self.rotate_hint_checkbox.setChecked(self.database.get_setting("similar_rotate_hint", "1") == "1")
+        for checkbox in (self.same_ratio_checkbox, self.same_resolution_checkbox, self.rotate_hint_checkbox):
+            checkbox.stateChanged.connect(lambda _state: self._save_settings())
+        protected_text = self.database.get_setting("protected_roots", "")
+        self.protected_roots = {normalize_path(Path(item)) for item in protected_text.split("|") if item}
+        self._refresh_folder_item_labels()
         self.organize_photo_input.setText(str(self.organize_targets.photo_root))
         self.organize_video_input.setText(str(self.organize_targets.video_root))
         self.organize_document_input.setText(str(self.organize_targets.document_root))
@@ -1031,6 +1085,10 @@ class MainWindow(QMainWindow):
         self.database.set_setting("keep_strategy", self.strategy_combo.currentText())
         self.database.set_setting("organize_rule", self.organize_rule_combo.currentText())
         self.database.set_setting("organize_keep_only", "1" if self.organize_keep_only_checkbox.isChecked() else "0")
+        self.database.set_setting("similar_same_ratio", "1" if self.same_ratio_checkbox.isChecked() else "0")
+        self.database.set_setting("similar_same_resolution", "1" if self.same_resolution_checkbox.isChecked() else "0")
+        self.database.set_setting("similar_rotate_hint", "1" if self.rotate_hint_checkbox.isChecked() else "0")
+        self.database.set_setting("protected_roots", "|".join(str(path) for path in sorted(self.protected_roots, key=str)))
         self.database.set_setting("target_photo_root", self.organize_photo_input.text().strip())
         self.database.set_setting("target_video_root", self.organize_video_input.text().strip())
         self.database.set_setting("target_document_root", self.organize_document_input.text().strip())
@@ -1041,11 +1099,11 @@ class MainWindow(QMainWindow):
         if session is None:
             return
         self.current_roots = session.root_paths
-        existing = {self.folder_list.item(index).text() for index in range(self.folder_list.count())}
+        existing = {str(path) for path in self._folder_paths()}
         for root in session.root_paths:
             root_text = str(root)
             if root_text not in existing:
-                self.folder_list.addItem(root_text)
+                self._add_folder_item(root)
                 existing.add(root_text)
         groups = self.database.load_scan_session_groups(session.id)
         if groups:
@@ -1066,29 +1124,6 @@ class MainWindow(QMainWindow):
         self.group_stack.setCurrentIndex(index)
 
     def refresh_group_list(self) -> None:
-        selected_type = self.group_type_filter_combo.currentText()
-        sort_label = self.group_sort_combo.currentText()
-        keyword = self.group_search_input.text().strip().lower()
-        min_size_text = self.group_min_size_input.text().strip()
-        min_unit_label = self.group_min_size_unit_combo.currentText()
-        max_size_text = self.group_max_size_input.text().strip()
-        max_unit_label = self.group_max_size_unit_combo.currentText()
-        min_size_bytes = 0
-        max_size_bytes = 0
-        if min_size_text:
-            try:
-                min_size_value = float(min_size_text)
-                multiplier = 1024 * 1024 if min_unit_label == "MB" else 1024 * 1024 * 1024
-                min_size_bytes = int(min_size_value * multiplier)
-            except ValueError:
-                min_size_bytes = -1
-        if max_size_text:
-            try:
-                max_size_value = float(max_size_text)
-                multiplier = 1024 * 1024 if max_unit_label == "MB" else 1024 * 1024 * 1024
-                max_size_bytes = int(max_size_value * multiplier)
-            except ValueError:
-                max_size_bytes = -1
         current_group = None
         current_item = self.group_list.currentItem()
         if current_item is not None:
@@ -1096,34 +1131,12 @@ class MainWindow(QMainWindow):
             if isinstance(data, DuplicateGroup):
                 current_group = data
 
-        filtered_groups: list[DuplicateGroup] = []
+        filtered_groups, min_size_bytes, max_size_bytes = self._visible_groups()
+        selected_type = self.group_type_filter_combo.currentText()
+        keyword = self.group_search_input.text().strip().lower()
+        min_unit_label = self.group_min_size_unit_combo.currentText()
+        max_unit_label = self.group_max_size_unit_combo.currentText()
         self.group_list.clear()
-        for group in self.groups:
-            group_category = classify_group_category([record.path for record in group.records])
-            type_label = category_label(group_category)
-            if selected_type != "全部类型" and type_label != selected_type:
-                continue
-            if min_size_bytes > 0 and group.reclaimable_bytes < min_size_bytes:
-                continue
-            if min_size_bytes < 0:
-                continue
-            if max_size_bytes > 0 and group.reclaimable_bytes > max_size_bytes:
-                continue
-            if max_size_bytes < 0:
-                continue
-            if keyword:
-                haystack_parts = [group.title.lower()]
-                haystack_parts.extend(record.name.lower() for record in group.records)
-                haystack_parts.extend(str(record.path).lower() for record in group.records)
-                if keyword not in " | ".join(haystack_parts):
-                    continue
-
-            filtered_groups.append(group)
-
-        if sort_label == "按可整理空间：从大到小":
-            filtered_groups.sort(key=lambda item: item.reclaimable_bytes, reverse=True)
-        elif sort_label == "按文件数：从多到少":
-            filtered_groups.sort(key=lambda item: len(item.records), reverse=True)
 
         for group in filtered_groups:
             group_category = classify_group_category([record.path for record in group.records])
@@ -1186,6 +1199,60 @@ class MainWindow(QMainWindow):
                 self.group_list.setCurrentRow(0)
         else:
             self.group_list.setCurrentRow(0)
+
+    def _visible_groups(self) -> tuple[list[DuplicateGroup], int, int]:
+        selected_type = self.group_type_filter_combo.currentText()
+        sort_label = self.group_sort_combo.currentText()
+        keyword = self.group_search_input.text().strip().lower()
+        min_size_bytes = self._size_filter_bytes(self.group_min_size_input, self.group_min_size_unit_combo)
+        max_size_bytes = self._size_filter_bytes(self.group_max_size_input, self.group_max_size_unit_combo)
+
+        filtered_groups: list[DuplicateGroup] = []
+        for group in self.groups:
+            group_category = classify_group_category([record.path for record in group.records])
+            type_label = category_label(group_category)
+            if selected_type != "全部类型" and type_label != selected_type:
+                continue
+            if min_size_bytes > 0 and group.reclaimable_bytes < min_size_bytes:
+                continue
+            if min_size_bytes < 0:
+                continue
+            if max_size_bytes > 0 and group.reclaimable_bytes > max_size_bytes:
+                continue
+            if max_size_bytes < 0:
+                continue
+            if keyword:
+                haystack_parts = [group.title.lower()]
+                haystack_parts.extend(record.name.lower() for record in group.records)
+                haystack_parts.extend(str(record.path).lower() for record in group.records)
+                if keyword not in " | ".join(haystack_parts):
+                    continue
+            filtered_groups.append(group)
+
+        if sort_label == "按可整理空间：从大到小":
+            filtered_groups.sort(key=lambda item: item.reclaimable_bytes, reverse=True)
+        elif sort_label == "按文件数：从多到少":
+            filtered_groups.sort(key=lambda item: len(item.records), reverse=True)
+        return filtered_groups, min_size_bytes, max_size_bytes
+
+    def _size_filter_bytes(self, field: QLineEdit, unit_combo: QComboBox) -> int:
+        text = field.text().strip()
+        if not text:
+            return 0
+        try:
+            value = float(text)
+        except ValueError:
+            return -1
+        multiplier = 1024 * 1024 if unit_combo.currentText() == "MB" else 1024 * 1024 * 1024
+        return int(value * multiplier)
+
+    def clear_group_filters(self) -> None:
+        self.group_type_filter_combo.setCurrentIndex(0)
+        self.group_sort_combo.setCurrentIndex(0)
+        self.group_search_input.clear()
+        self.group_min_size_input.clear()
+        self.group_max_size_input.clear()
+        self.refresh_group_list()
 
     def rebuild_directory_browser(self) -> None:
         self.file_duplicate_links, self.directory_duplicate_files = build_directory_duplicate_index(self.groups)
@@ -1383,7 +1450,13 @@ class MainWindow(QMainWindow):
         include_paths = set(paths)
         if self.organize_keep_only_checkbox.isChecked():
             include_paths &= self._selected_keep_paths()
-        preview = build_organize_preview(paths, self.organize_targets, include_paths=include_paths)
+        preview = build_organize_preview(
+            paths,
+            self.organize_targets,
+            include_paths=include_paths,
+            exclude_roots={normalize_path(path) for path in self.protected_roots},
+        )
+        protected_skipped = sum(1 for path in paths if is_under_any(path, self.protected_roots))
         self.organize_preview_items = preview
         self.organize_preview_table.setRowCount(len(preview))
 
@@ -1401,7 +1474,7 @@ class MainWindow(QMainWindow):
         self.organize_preview_table.resizeRowsToContents()
 
         self.organize_summary_label.setText(
-            f"来自目录树选择的预览：{len(preview)} 个文件 | 照片 {counts['photo']} | 视频 {counts['video']} | 文档 {counts['document']} | 其他 {counts['other']}"
+            f"来自目录树选择的预览：{len(preview)} 个文件 | 照片 {counts['photo']} | 视频 {counts['video']} | 文档 {counts['document']} | 其他 {counts['other']} | 跳过保护目录 {protected_skipped}"
         )
         self.main_tabs.setCurrentIndex(0)
         self.status_label.setText("已根据目录树选择生成整理预览")
@@ -1435,14 +1508,26 @@ class MainWindow(QMainWindow):
         return keep_paths
 
     def preview_organize_plan(self) -> None:
-        roots = [Path(self.folder_list.item(index).text()) for index in range(self.folder_list.count())]
+        roots = self._folder_paths()
         if not roots:
             QMessageBox.information(self, "需要目录", "请先添加至少一个整理目录。")
             return
 
         self.organize_targets = self.current_organize_targets()
         include_paths = self._selected_keep_paths() if self.organize_keep_only_checkbox.isChecked() else None
-        preview = build_organize_preview(roots, self.organize_targets, include_paths=include_paths)
+        protected_roots = {normalize_path(path) for path in self.protected_roots}
+        preview = build_organize_preview(
+            roots,
+            self.organize_targets,
+            include_paths=include_paths,
+            exclude_roots=protected_roots,
+        )
+        protected_skipped = sum(
+            1
+            for root in roots
+            for path in (root.rglob("*") if root.exists() and root.is_dir() else [root])
+            if path.is_file() and is_under_any(path, protected_roots)
+        )
         self.organize_preview_items = preview
         self.organize_preview_table.setRowCount(len(preview))
 
@@ -1468,6 +1553,8 @@ class MainWindow(QMainWindow):
         )
         if self.organize_keep_only_checkbox.isChecked():
             summary += " | 当前仅包含重复组中的保留项"
+        if protected_skipped:
+            summary += f" | 已跳过保护目录 {protected_skipped} 个文件"
         self.organize_summary_label.setText(summary)
         self.status_label.setText("整理预览已生成")
         self._save_settings()
@@ -1577,7 +1664,7 @@ class MainWindow(QMainWindow):
         self.ai_model_input.setText(model)
 
     def start_scan(self) -> None:
-        roots = [Path(self.folder_list.item(index).text()) for index in range(self.folder_list.count())]
+        roots = self._folder_paths()
         if not roots:
             QMessageBox.information(self, "需要目录", "请先添加至少一个扫描目录。")
             return
@@ -1597,7 +1684,14 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self.current_roots = roots
 
-        self.worker = ScanWorker(roots, self.database.path, self.threshold_spin.value())
+        self._save_settings()
+        self.worker = ScanWorker(
+            roots,
+            self.database.path,
+            self.threshold_spin.value(),
+            same_ratio_only=self.same_ratio_checkbox.isChecked(),
+            same_resolution_only=self.same_resolution_checkbox.isChecked(),
+        )
         self.worker.progress_changed.connect(self.on_progress)
         self.worker.finished_groups.connect(self.on_scan_finished)
         self.worker.failed.connect(self.on_scan_failed)
@@ -1663,24 +1757,31 @@ class MainWindow(QMainWindow):
 
         group_key = self._group_key(group)
         manual_selection = group_key in self.manual_keep_group_keys
-        keep_path = self._suggest_keep(group.records).path
+        keep_result = choose_keep_records(group.records, self.strategy_combo.currentText(), self.protected_roots)
+        keep_paths = {record.path for record in keep_result.keep_records}
         self.file_table.setRowCount(len(group.records))
         self.updating_keep_checks = True
         for row, record in enumerate(group.records):
             keep_item = QTableWidgetItem()
             keep_item.setFlags(keep_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            checked = record.keep_selected if manual_selection else (record.path == keep_path)
+            checked = record.keep_selected if manual_selection else (record.path in keep_paths)
             keep_item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
             keep_item.setData(Qt.ItemDataRole.UserRole, record)
+            record.keep_selected = checked
             self.file_table.setItem(row, 0, keep_item)
-            self.file_table.setItem(row, 1, QTableWidgetItem(record.name))
-            self.file_table.setItem(row, 2, QTableWidgetItem(format_size(record.size)))
+            protected_item = QTableWidgetItem("保护" if is_under_any(record.path, self.protected_roots) else "")
+            if protected_item.text():
+                protected_item.setForeground(QColor("#1a7f37"))
+                protected_item.setToolTip("保护目录内文件不会被批量移动或回收。")
+            self.file_table.setItem(row, 1, protected_item)
+            self.file_table.setItem(row, 2, QTableWidgetItem(record.name))
+            self.file_table.setItem(row, 3, QTableWidgetItem(format_size(record.size)))
             modified = datetime.fromtimestamp(record.modified_at).strftime("%Y-%m-%d %H:%M")
-            self.file_table.setItem(row, 3, QTableWidgetItem(modified))
+            self.file_table.setItem(row, 4, QTableWidgetItem(modified))
             dimensions = f"{record.width}x{record.height}" if record.width and record.height else "-"
-            self.file_table.setItem(row, 4, QTableWidgetItem(dimensions))
-            self.file_table.setItem(row, 5, QTableWidgetItem(f"{group.score:.0%}" if group.kind == "similar" else "100%"))
-            self.file_table.setItem(row, 6, QTableWidgetItem(str(record.path)))
+            self.file_table.setItem(row, 5, QTableWidgetItem(dimensions))
+            self.file_table.setItem(row, 6, QTableWidgetItem(f"{group.score:.0%}" if group.kind == "similar" else "100%"))
+            self.file_table.setItem(row, 7, QTableWidgetItem(str(record.path)))
             self._add_thumbnail(record, row)
         self.updating_keep_checks = False
         self.file_table.resizeRowsToContents()
@@ -1731,13 +1832,52 @@ class MainWindow(QMainWindow):
                 self.keep_state_dirty = True
             self.populate_group(current, None)
 
+    def preview_bulk_keep_rule(self) -> None:
+        groups, _min_size, _max_size = self._visible_groups()
+        if not groups:
+            self.bulk_rule_hint_label.setText("当前筛选下没有可应用规则的重复分组。")
+            return
+        rule_label = self.bulk_keep_rule_combo.currentText()
+        protected_hits = 0
+        keep_count = 0
+        for group in groups:
+            result = choose_keep_records(group.records, rule_label, self.protected_roots)
+            keep_count += len(result.keep_records)
+            protected_hits += sum(1 for record in result.keep_records if is_under_any(record.path, self.protected_roots))
+        self.bulk_rule_hint_label.setText(
+            f"预览：规则“{rule_label}”将作用于当前筛选的 {len(groups)} 组，保留 {keep_count} 个文件，其中保护目录命中 {protected_hits} 个。"
+        )
+
+    def apply_bulk_keep_rule(self) -> None:
+        groups, _min_size, _max_size = self._visible_groups()
+        if not groups:
+            QMessageBox.information(self, "没有可应用分组", "当前筛选下没有重复分组。")
+            return
+        rule_label = self.bulk_keep_rule_combo.currentText()
+        changed_groups = 0
+        keep_count = 0
+        for group in groups:
+            result = choose_keep_records(group.records, rule_label, self.protected_roots)
+            keep_paths = {record.path for record in result.keep_records}
+            if not keep_paths:
+                continue
+            for record in group.records:
+                record.keep_selected = record.path in keep_paths
+            self.manual_keep_group_keys.add(self._group_key(group))
+            changed_groups += 1
+            keep_count += len(keep_paths)
+
+        self.keep_state_dirty = True
+        self._persist_keep_state()
+        self.refresh_group_list()
+        self.bulk_rule_hint_label.setText(
+            f"已应用规则“{rule_label}”：更新 {changed_groups} 组，保留 {keep_count} 个文件。"
+        )
+        self.status_label.setText("批量保留规则已应用")
+
     def _suggest_keep(self, records: list[FileRecord]) -> FileRecord:
-        strategy = self.strategy_combo.currentText()
-        if strategy == "保留最新修改":
-            return max(records, key=lambda item: item.modified_at)
-        if strategy == "保留最大文件":
-            return max(records, key=lambda item: item.size)
-        return max(records, key=lambda item: ((item.width or 0) * (item.height or 0), item.size, item.modified_at))
+        result = choose_keep_records(records, self.strategy_combo.currentText(), self.protected_roots)
+        return result.keep_records[0]
 
     def preview_selected_file(self) -> None:
         items = self.file_table.selectedItems()
@@ -1779,32 +1919,49 @@ class MainWindow(QMainWindow):
     def move_unchecked(self) -> None:
         if self.keep_state_dirty:
             self._persist_keep_state()
-        current = self.group_list.currentItem()
-        if not current:
-            return
-        group = current.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(group, DuplicateGroup):
+        groups, _min_size, _max_size = self._visible_groups()
+        if not groups:
+            QMessageBox.information(self, "没有可处理分组", "当前筛选下没有重复分组。")
             return
 
-        selected_to_move: list[FileRecord] = []
-        for row in range(self.file_table.rowCount()):
-            item = self.file_table.item(row, 0)
-            if not item:
-                continue
-            record = item.data(Qt.ItemDataRole.UserRole)
-            if isinstance(record, FileRecord) and item.checkState() != Qt.CheckState.Checked:
-                selected_to_move.append(record)
+        plan = build_processing_plan(groups, {normalize_path(path) for path in self.protected_roots})
+        if plan.invalid_groups:
+            first = plan.invalid_groups[0]
+            self.group_mode_combo.setCurrentIndex(0)
+            for row in range(self.group_list.count()):
+                item = self.group_list.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) is first:
+                    self.group_list.setCurrentRow(row)
+                    break
+            QMessageBox.warning(
+                self,
+                "需要至少保留一个文件",
+                f"当前筛选结果中有 {len(plan.invalid_groups)} 组没有勾选保留文件。请先应用保留规则或手动勾选。",
+            )
+            return
 
+        selected_to_move = plan.records_to_process
         if not selected_to_move:
-            QMessageBox.information(self, "没有要移动的文件", "请取消勾选需要移动的重复文件。")
+            QMessageBox.information(
+                self,
+                "没有要处理的文件",
+                "当前筛选结果中没有可移动/回收的文件。保护目录内文件会自动跳过。",
+            )
             return
 
+        affected_dirs = "\n".join(str(path) for path in plan.affected_directories[:8])
+        if len(plan.affected_directories) > 8:
+            affected_dirs += f"\n... 另有 {len(plan.affected_directories) - 8} 个目录"
         reply = QMessageBox.question(
             self,
             "确认处理",
             (
-                f"勾选的文件会保留在原位置。\n"
-                f"未勾选的 {len(selected_to_move)} 个文件将按“{self.action_combo.currentText()}”处理。\n\n"
+                f"当前筛选结果：{len(groups)} 组。\n"
+                f"保留文件：{plan.keep_count} 个。\n"
+                f"将按“{self.action_combo.currentText()}”处理：{len(selected_to_move)} 个文件。\n"
+                f"预估可释放/转移空间：{format_size(plan.reclaimable_bytes)}。\n"
+                f"保护目录跳过：{plan.protected_skip_count} 个文件。\n\n"
+                f"涉及目录：\n{affected_dirs}\n\n"
                 f"目标目录：\n{self.destination}"
             ),
         )
@@ -1815,32 +1972,18 @@ class MainWindow(QMainWindow):
             if self.action_combo.currentText() == "移动到回收站":
                 moved_paths = trash_records(selected_to_move, self.database)
                 moved_count = len(moved_paths)
+                moved_sources = set(moved_paths)
             else:
-                moved = move_records(selected_to_move, self.destination, group.title, self.database)
+                moved = move_records(selected_to_move, self.destination, "当前筛选结果", self.database)
                 moved_count = len(moved)
+                moved_sources = {source for source, _target in moved}
         except Exception as exc:
             QMessageBox.critical(self, "处理失败", str(exc))
             return
 
         QMessageBox.information(self, "处理完成", f"已处理 {moved_count} 个文件。")
         self.refresh_operations()
-        remaining = [record for record in group.records if record not in selected_to_move]
-        group_key = self._group_key(group)
-        if len(remaining) <= 1:
-            self.group_list.takeItem(self.group_list.row(current))
-            self.groups = [item for item in self.groups if item is not group]
-            self.manual_keep_group_keys.discard(group_key)
-            self.file_table.setRowCount(0)
-            self.thumbnail_list.clear()
-            self.preview_label.setText("选择图片以预览")
-        else:
-            group.records = remaining
-            if group_key in self.manual_keep_group_keys:
-                self.manual_keep_group_keys.discard(group_key)
-                self.manual_keep_group_keys.add(self._group_key(group))
-            self.populate_group(current, None)
-        if self.current_roots:
-            self.database.replace_latest_scan_session(self.current_roots, self.groups)
+        self._remove_moved_sources_from_groups(moved_sources)
 
     def refresh_operations(self) -> None:
         operations = self.database.list_operations()
@@ -1902,24 +2045,6 @@ class MainWindow(QMainWindow):
         self.history_table.resizeRowsToContents()
 
     def apply_session_filter(self) -> None:
-        keyword = self.session_filter_input.text().strip().lower()
-        visible_count = 0
-        for row in range(self.session_table.rowCount()):
-            row_values: list[str] = []
-            for column in range(6):
-                item = self.session_table.item(row, column)
-                if item is not None:
-                    row_values.append(item.text().lower())
-            matched = not keyword or keyword in " | ".join(row_values)
-            self.session_table.setRowHidden(row, not matched)
-            if matched:
-                visible_count += 1
-        if keyword:
-            self.session_summary_label.setText(f"筛选结果：{visible_count} 条扫描任务匹配 “{self.session_filter_input.text().strip()}”。")
-        elif self.session_table.currentRow() < 0:
-            self.session_summary_label.setText("这里会显示历史扫描任务。")
-
-    def apply_session_filter(self) -> None:  # type: ignore[override]
         keyword = self.session_filter_input.text().strip().lower()
         range_label = self.session_range_combo.currentText()
         now_ts = datetime.now().timestamp()
@@ -2243,7 +2368,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "导出完成", target)
 
     def organize_by_rule(self) -> None:
-        roots = [Path(self.folder_list.item(index).text()) for index in range(self.folder_list.count())]
+        roots = self._folder_paths()
         if not roots:
             QMessageBox.information(self, "需要目录", "请先添加至少一个整理目录。")
             return
@@ -2266,7 +2391,7 @@ class MainWindow(QMainWindow):
         total_moved = 0
         try:
             for root in roots:
-                moved = organize_files(root, self.destination, rule)
+                moved = organize_files(root, self.destination, rule, exclude_roots=self.protected_roots)
                 total_moved += len(moved)
         except Exception as exc:
             QMessageBox.critical(self, "整理失败", str(exc))

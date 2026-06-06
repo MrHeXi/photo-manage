@@ -21,6 +21,7 @@ from photo_dedupe.core.organizer import (
     organize_images_by_date,
 )
 from photo_dedupe.core.scanner import DuplicateScanner
+from photo_dedupe.core.selection import build_processing_plan, choose_keep_records
 from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import combine_hashes
 
@@ -64,6 +65,38 @@ class DuplicateScannerTests(unittest.TestCase):
         similar_groups = [group for group in groups if group.kind == "similar"]
         self.assertEqual(len(similar_groups), 1)
         self.assertEqual(len(similar_groups[0].records), 2)
+
+    def test_similar_images_can_require_same_resolution(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            Image.new("RGB", (32, 32), "red").save(root / "small.png")
+            Image.new("RGB", (64, 64), "red").save(root / "large.png")
+
+            groups = DuplicateScanner().scan([root], image_same_resolution_only=True)
+
+        similar_groups = [group for group in groups if group.kind == "similar"]
+        self.assertEqual(similar_groups, [])
+
+    def test_similar_images_can_require_same_ratio(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            Image.new("RGB", (32, 32), "red").save(root / "square.png")
+            Image.new("RGB", (64, 32), "red").save(root / "wide.png")
+
+            groups = DuplicateScanner().scan([root], image_same_ratio_only=True)
+
+        similar_groups = [group for group in groups if group.kind == "similar"]
+        self.assertEqual(similar_groups, [])
 
     def test_undo_move_restores_file_and_marks_operation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -186,6 +219,43 @@ class DuplicateScannerTests(unittest.TestCase):
             preview = build_organize_preview([source_dir], targets, include_paths={keep_file})
 
         self.assertEqual([item.source.name for item in preview], ["keep.jpg"])
+
+    def test_build_organize_preview_skips_protected_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            protected_dir = source_dir / "library"
+            protected_dir.mkdir(parents=True)
+            (source_dir / "loose.jpg").write_text("x", encoding="utf-8")
+            (protected_dir / "safe.jpg").write_text("x", encoding="utf-8")
+
+            targets = OrganizeTargetConfig(
+                photo_root=root / "photos",
+                video_root=root / "videos",
+                document_root=root / "docs",
+                other_root=root / "others",
+            )
+
+            preview = build_organize_preview([source_dir], targets, exclude_roots={protected_dir})
+
+        self.assertEqual([item.source.name for item in preview], ["loose.jpg"])
+
+    def test_organize_files_skips_protected_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            protected_dir = source_dir / "library"
+            protected_dir.mkdir(parents=True)
+            loose = source_dir / "loose.txt"
+            safe = protected_dir / "safe.txt"
+            loose.write_text("x", encoding="utf-8")
+            safe.write_text("x", encoding="utf-8")
+
+            moved = organize_files(source_dir, root / "organized", "type", exclude_roots={protected_dir})
+            safe_exists = safe.exists()
+
+        self.assertEqual([source.name for source, _target in moved], ["loose.txt"])
+        self.assertTrue(safe_exists)
 
     def test_execute_organize_preview_moves_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -498,6 +568,30 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0].id, first_id)
         self.assertEqual(restored_first[0].title, "first")
+
+    def test_keep_rule_prefers_protected_directory(self) -> None:
+        root = Path("D:/demo")
+        protected = root / "library"
+        safe = FileRecord(path=protected / "photo.jpg", size=10, modified_at=1.0)
+        duplicate = FileRecord(path=root / "temp" / "photo-copy.jpg", size=100, modified_at=10.0)
+
+        result = choose_keep_records([safe, duplicate], "保留最大文件", {protected})
+
+        self.assertEqual([record.path for record in result.keep_records], [safe.path])
+
+    def test_processing_plan_skips_protected_unchecked_files(self) -> None:
+        root = Path("D:/demo")
+        protected = root / "library"
+        safe = FileRecord(path=protected / "photo.jpg", size=10, modified_at=1.0, keep_selected=False)
+        keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+        remove = FileRecord(path=root / "temp" / "photo-copy.jpg", size=30, modified_at=3.0, keep_selected=False)
+        group = DuplicateGroup(kind="exact", title="group", records=[safe, keep, remove])
+
+        plan = build_processing_plan([group], {protected})
+
+        self.assertEqual([record.path for record in plan.records_to_process], [remove.path])
+        self.assertEqual(plan.protected_skip_count, 1)
+        self.assertEqual(plan.reclaimable_bytes, 30)
 
     def test_trash_operation_is_logged_and_exported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

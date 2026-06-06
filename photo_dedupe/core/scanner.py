@@ -21,6 +21,8 @@ class DuplicateScanner:
         self,
         roots: list[Path],
         image_similarity_threshold: int = 8,
+        image_same_ratio_only: bool = False,
+        image_same_resolution_only: bool = False,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
     ) -> list[DuplicateGroup]:
@@ -48,7 +50,14 @@ class DuplicateScanner:
             return []
         exact_paths = {record.path for group in exact_groups for record in group.records}
         image_records = [record for record in records if record.path not in exact_paths]
-        image_groups = self._similar_image_groups(image_records, image_similarity_threshold, progress, should_cancel)
+        image_groups = self._similar_image_groups(
+            image_records,
+            image_similarity_threshold,
+            progress,
+            should_cancel,
+            same_ratio_only=image_same_ratio_only,
+            same_resolution_only=image_same_resolution_only,
+        )
         video_groups = self._similar_video_groups(image_records, image_similarity_threshold, progress, should_cancel)
 
         if self.database:
@@ -169,6 +178,8 @@ class DuplicateScanner:
         threshold: int,
         progress: ProgressCallback | None,
         should_cancel: CancelCallback | None,
+        same_ratio_only: bool = False,
+        same_resolution_only: bool = False,
     ) -> list[DuplicateGroup]:
         images = [record for record in records if is_image(record.path)]
         total = len(images) or 1
@@ -212,6 +223,10 @@ class DuplicateScanner:
                 right = hashed[right_index]
                 if right.image_hash is None:
                     continue
+                if same_resolution_only and (left.width, left.height) != (right.width, right.height):
+                    continue
+                if same_ratio_only and not self._same_image_ratio(left, right):
+                    continue
                 distance = hamming_distance(left.image_hash, right.image_hash)
                 if distance <= threshold:
                     union(left_index, right_index)
@@ -243,3 +258,8 @@ class DuplicateScanner:
                 )
             )
         return groups
+
+    def _same_image_ratio(self, left: FileRecord, right: FileRecord) -> bool:
+        if not left.width or not left.height or not right.width or not right.height:
+            return False
+        return left.width * right.height == right.width * left.height
