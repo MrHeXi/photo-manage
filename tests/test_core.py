@@ -7,6 +7,8 @@ import json
 import logging
 from pathlib import Path
 
+from PySide6.QtCore import QLockFile
+
 from photo_dedupe.core.ai_client import parse_chat_content, parse_score
 from photo_dedupe.core.diagnostics import build_health_items, default_log_path, setup_logging
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
@@ -24,6 +26,7 @@ from photo_dedupe.core.organizer import (
 )
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records
+from photo_dedupe.core.single_instance import default_lock_path
 from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import combine_hashes
 
@@ -85,6 +88,22 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(by_name["启动日志"].status, "正常")
         self.assertEqual(by_name["视频指纹"].status, "可选缺失")
         self.assertIn("500/1200", by_name["历史缓存"].detail)
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_lock_file_blocks_second_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = default_lock_path(Path(directory))
+            first_lock = QLockFile(str(lock_path))
+            second_lock = QLockFile(str(lock_path))
+            first_lock.setStaleLockTime(0)
+            second_lock.setStaleLockTime(0)
+
+            self.assertTrue(first_lock.tryLock(100))
+            try:
+                self.assertFalse(second_lock.tryLock(100))
+            finally:
+                first_lock.unlock()
 
 
 class DuplicateScannerTests(unittest.TestCase):

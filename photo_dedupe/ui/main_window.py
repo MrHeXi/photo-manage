@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QTimer, Signal, QUrl
+from PySide6.QtCore import QLockFile, QThread, Qt, QTimer, Signal, QUrl
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -68,6 +68,7 @@ from photo_dedupe.core.selection import (
     is_under_any,
     normalize_path,
 )
+from photo_dedupe.core.single_instance import default_lock_path
 from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import video_hash_available
 
@@ -2518,6 +2519,12 @@ def run() -> None:
     try:
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(True)
+        instance_lock = QLockFile(str(default_lock_path()))
+        instance_lock.setStaleLockTime(0)
+        if not instance_lock.tryLock(100):
+            logger.warning("Startup blocked because another instance is already running")
+            QMessageBox.information(None, APP_NAME, "Photo Manage GPT 已经在运行，请切换到已打开的窗口。")
+            return
         icon = load_app_icon()
         if not icon.isNull():
             app.setWindowIcon(icon)
