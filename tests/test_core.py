@@ -4,9 +4,11 @@ import tempfile
 import unittest
 import csv
 import json
+import logging
 from pathlib import Path
 
 from photo_dedupe.core.ai_client import parse_chat_content, parse_score
+from photo_dedupe.core.diagnostics import build_health_items, default_log_path, setup_logging
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
@@ -34,6 +36,55 @@ class BrandingAssetTests(unittest.TestCase):
             path = assets / filename
             self.assertTrue(path.exists(), filename)
             self.assertGreater(path.stat().st_size, 0, filename)
+
+
+class DiagnosticsTests(unittest.TestCase):
+    def test_default_log_path_uses_app_logs_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = default_log_path(Path(directory))
+
+        self.assertEqual(path.name, "app.log")
+        self.assertEqual(path.parent.name, "logs")
+        self.assertEqual(path.parent.parent.name, "PhotoManageGPT")
+
+    def test_setup_logging_writes_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "app.log"
+            setup_logging(log_path)
+            logging.getLogger("photo_dedupe.tests").info("diagnostic test message")
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+
+            content = log_path.read_text(encoding="utf-8")
+            for handler in list(logging.getLogger().handlers):
+                if getattr(handler, "_photo_manage_handler", False):
+                    logging.getLogger().removeHandler(handler)
+                    handler.close()
+
+        self.assertIn("diagnostic test message", content)
+
+    def test_build_health_items_reports_runtime_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database_path = root / "photo_manage.db"
+            log_path = root / "app.log"
+            database_path.write_text("db", encoding="utf-8")
+            log_path.write_text("log", encoding="utf-8")
+
+            items = build_health_items(
+                database_path=database_path,
+                log_path=log_path,
+                ffmpeg_available=False,
+                history_state="已恢复部分历史结果",
+                loaded_groups=500,
+                total_groups=1200,
+            )
+
+        by_name = {item.name: item for item in items}
+        self.assertEqual(by_name["数据库"].status, "正常")
+        self.assertEqual(by_name["启动日志"].status, "正常")
+        self.assertEqual(by_name["视频指纹"].status, "可选缺失")
+        self.assertIn("500/1200", by_name["历史缓存"].detail)
 
 
 class DuplicateScannerTests(unittest.TestCase):

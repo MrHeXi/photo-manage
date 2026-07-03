@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,12 @@ from PySide6.QtWidgets import (
 )
 
 from photo_dedupe.core.ai_client import AiConfig, analyze_image
+from photo_dedupe.core.diagnostics import (
+    build_health_items,
+    default_log_path,
+    install_exception_logging,
+    setup_logging,
+)
 from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
@@ -154,6 +161,7 @@ class ScanWorker(QThread):
             )
             self.finished_groups.emit(groups)
         except Exception as exc:
+            logging.getLogger(__name__).exception("Scan worker failed")
             self.failed.emit(str(exc))
         finally:
             database.close()
@@ -181,6 +189,7 @@ class AiWorker(QThread):
                 count += 1
             self.finished_batch.emit(count)
         except Exception as exc:
+            logging.getLogger(__name__).exception("AI worker failed")
             self.failed.emit(str(exc))
 
 
@@ -228,6 +237,7 @@ class RestoreSessionWorker(QThread):
                 },
             )
         except Exception as exc:
+            logging.getLogger(__name__).exception("Restore session worker failed")
             self.failed.emit(str(exc))
         finally:
             database.close()
@@ -291,6 +301,7 @@ class MainWindow(QMainWindow):
         self.session_table = QTableWidget(0, 7)
         self.history_table = QTableWidget(0, 7)
         self.ai_table = QTableWidget(0, 5)
+        self.health_table = QTableWidget(0, 3)
         self.organize_preview_table = QTableWidget(0, 4)
         self.action_combo = QComboBox()
         self.bulk_keep_rule_combo = QComboBox()
@@ -318,6 +329,7 @@ class MainWindow(QMainWindow):
         self.destination_label = QLabel("")
         self.group_status_label = QLabel("")
         self.session_summary_label = QLabel("")
+        self.health_summary_label = QLabel("")
         self.organize_help_label = QLabel("")
         self.retention_hint_label = QLabel("勾选的文件会保留在原位置；保护目录内文件不会被批量移动或回收。")
         self.bulk_rule_hint_label = QLabel("")
@@ -332,6 +344,8 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
+        self.health_log_path = default_log_path()
+        self.history_state = "正在加载最近一次扫描缓存"
         self.media_player.setAudioOutput(self.audio_output)
         self.media_player.setVideoOutput(self.video_widget)
 
@@ -343,6 +357,7 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._apply_styles()
         self._update_destination_label()
+        self.refresh_health_diagnostics()
         self.status_label.setText("正在加载最近数据")
         QTimer.singleShot(0, self._finish_startup)
 
@@ -362,10 +377,12 @@ class MainWindow(QMainWindow):
 
     def _finish_startup(self) -> None:
         self.group_status_label.setText("正在尝试恢复最近一次扫描结果...")
+        self.history_state = "正在加载最近一次扫描缓存"
         health_notes = ["正在加载最近一次扫描缓存"]
         if not video_hash_available():
             health_notes.append("未检测到 ffmpeg，相似视频检测会自动跳过")
         self.status_label.setText("；".join(health_notes))
+        self.refresh_health_diagnostics()
         self.start_restore_session()
 
     def _folder_path_from_item(self, item: QListWidgetItem) -> Path:
@@ -398,6 +415,32 @@ class MainWindow(QMainWindow):
             item.setForeground(QColor("#1a7f37") if is_protected else QColor("#24292f"))
             item.setToolTip("保护目录：批量处理会跳过此目录内文件。" if is_protected else str(path))
 
+    def refresh_health_diagnostics(self) -> None:
+        items = build_health_items(
+            database_path=self.database.path,
+            log_path=self.health_log_path,
+            ffmpeg_available=video_hash_available(),
+            history_state=self.history_state,
+            loaded_groups=self.restored_loaded_groups,
+            total_groups=self.restored_total_groups,
+        )
+        self.health_summary_label.setText(
+            f"启动日志：{self.health_log_path}\n遇到启动失败、后台残留或历史加载异常时，可先查看这里的诊断信息。"
+        )
+        self.health_table.setRowCount(len(items))
+        for row, item in enumerate(items):
+            status_cell = QTableWidgetItem(item.status)
+            if item.status in {"正常"}:
+                status_cell.setForeground(QColor("#1a7f37"))
+            elif item.status in {"可选缺失", "未创建", "待加载"}:
+                status_cell.setForeground(QColor("#bf8700"))
+            else:
+                status_cell.setForeground(QColor("#cf222e"))
+            for column, value in enumerate((item.name, item.status, item.detail)):
+                table_item = status_cell if column == 1 else QTableWidgetItem(value)
+                self.health_table.setItem(row, column, table_item)
+        self.health_table.resizeRowsToContents()
+
     def start_restore_session(self, session_id: int | None = None, offset_groups: int = 0) -> None:
         if self.restore_worker and self.restore_worker.isRunning():
             return
@@ -426,12 +469,16 @@ class MainWindow(QMainWindow):
     def on_restore_failed(self, message: str) -> None:
         self.status_label.setText("启动恢复失败")
         self.group_status_label.setText(f"历史结果加载失败：{message}")
+        self.history_state = f"历史结果加载失败：{message}"
+        self.refresh_health_diagnostics()
 
     def on_restore_finished(self, session, payload) -> None:  # type: ignore[override]
         if session is None:
             self.status_label.setText("准备就绪")
             self.group_status_label.setText("当前没有可恢复的扫描结果。")
+            self.history_state = "当前没有可恢复的扫描结果"
             self.load_more_groups_button.setEnabled(False)
+            self.refresh_health_diagnostics()
             return
 
         groups = payload["groups"]
@@ -457,6 +504,7 @@ class MainWindow(QMainWindow):
                 self.load_more_groups_button.setText(
                     f"继续加载更多 ({self.restored_loaded_groups}/{self.restored_total_groups})"
                 )
+                self.history_state = "已恢复部分历史结果，可继续加载"
                 self.group_status_label.setText(
                     f"已恢复 {self.restored_loaded_groups}/{self.restored_total_groups} 组历史结果，可继续加载更多。"
                 )
@@ -466,12 +514,15 @@ class MainWindow(QMainWindow):
             else:
                 self.load_more_groups_button.setEnabled(False)
                 self.load_more_groups_button.setText("已全部加载")
+                self.history_state = "已恢复全部历史结果"
                 self.group_status_label.setText(f"已恢复全部 {self.restored_total_groups} 组历史结果。")
                 self.status_label.setText(f"已恢复全部 {self.restored_total_groups} 组已保存结果。")
         else:
             self.status_label.setText("准备就绪")
             self.group_status_label.setText("当前没有可恢复的扫描结果。")
+            self.history_state = "当前没有可恢复的扫描结果"
             self.load_more_groups_button.setEnabled(False)
+        self.refresh_health_diagnostics()
 
     def _default_destination(self) -> Path:
         desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
@@ -527,6 +578,8 @@ class MainWindow(QMainWindow):
         export_ai_button.clicked.connect(self.export_ai_results)
         filter_ai_button = QPushButton("筛选低分")
         filter_ai_button.clicked.connect(self.refresh_ai_results)
+        refresh_health_button = QPushButton("刷新诊断")
+        refresh_health_button.clicked.connect(self.refresh_health_diagnostics)
 
         self.ai_provider_combo.addItems(["自定义", "OpenAI", "DashScope", "DeepSeek", "Moonshot", "Zhipu"])
         self.ai_provider_combo.currentTextChanged.connect(self.apply_ai_provider_preset)
@@ -810,6 +863,24 @@ class MainWindow(QMainWindow):
         ai_layout.addLayout(ai_filter_buttons)
         ai_layout.addWidget(self.ai_table)
 
+        self.health_table.setHorizontalHeaderLabels(["项目", "状态", "详情"])
+        self.health_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.health_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.health_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.health_table.setAlternatingRowColors(True)
+        self.health_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.health_table.verticalHeader().setDefaultSectionSize(30)
+
+        health_panel = QWidget()
+        health_panel.setObjectName("ContentPanel")
+        health_layout = QVBoxLayout(health_panel)
+        health_layout.setContentsMargins(14, 14, 14, 14)
+        health_layout.setSpacing(10)
+        self.health_summary_label.setWordWrap(True)
+        health_layout.addWidget(self.health_summary_label)
+        health_layout.addWidget(self.health_table)
+        health_layout.addWidget(refresh_health_button)
+
         self.organize_photo_input.setText(str(self.organize_targets.photo_root))
         self.organize_video_input.setText(str(self.organize_targets.video_root))
         self.organize_document_input.setText(str(self.organize_targets.document_root))
@@ -872,6 +943,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(operations_panel, "操作记录")
         tabs.addTab(history_panel, "扫描历史")
         tabs.addTab(ai_panel, "AI 判断")
+        tabs.addTab(health_panel, "健康诊断")
 
         self.main_tabs.currentChanged.connect(self.on_tab_changed)
 
@@ -1707,6 +1779,8 @@ class MainWindow(QMainWindow):
         self.detail_label.clear()
         self.progress.setValue(0)
         self.status_label.setText("正在扫描")
+        self.history_state = "正在执行新扫描"
+        self.refresh_health_diagnostics()
         self.media_player.stop()
         self.scan_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
@@ -1756,8 +1830,10 @@ class MainWindow(QMainWindow):
         if not restored and self.current_roots:
             self.database.replace_latest_scan_session(self.current_roots, groups)
         if restored:
+            self.history_state = "已恢复最近一次扫描"
             self.status_label.setText(f"已恢复最近一次扫描：{len(groups)} 组重复/相似文件")
         else:
+            self.history_state = "新扫描已完成"
             self.status_label.setText(f"扫描完成：发现 {len(groups)} 组重复/相似文件")
         self.preview_label.setText("选择图片以预览")
         self.progress.setValue(self.progress.maximum())
@@ -1765,12 +1841,15 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         if self.history_loaded and not restored:
             self.refresh_history()
+        self.refresh_health_diagnostics()
 
     def on_scan_failed(self, message: str) -> None:
         QMessageBox.critical(self, "扫描失败", message)
         self.status_label.setText("扫描失败")
+        self.history_state = f"扫描失败：{message}"
         self.scan_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self.refresh_health_diagnostics()
 
     def populate_group(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if self.keep_state_dirty:
@@ -2431,14 +2510,26 @@ class MainWindow(QMainWindow):
 
 
 def run() -> None:
+    log_path = setup_logging()
+    install_exception_logging()
+    logger = logging.getLogger(__name__)
+    logger.info("Application startup requested; log=%s", log_path)
     set_windows_app_user_model_id()
-    app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(True)
-    icon = load_app_icon()
-    if not icon.isNull():
-        app.setWindowIcon(icon)
-    window = MainWindow()
-    window.show()
-    window.raise_()
-    window.activateWindow()
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(True)
+        icon = load_app_icon()
+        if not icon.isNull():
+            app.setWindowIcon(icon)
+        window = MainWindow()
+        logger.info("Main window created")
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        logger.info("Main window shown")
+        exit_code = app.exec()
+        logger.info("Application exited with code %s", exit_code)
+        sys.exit(exit_code)
+    except Exception:
+        logger.exception("Fatal startup failure")
+        raise
