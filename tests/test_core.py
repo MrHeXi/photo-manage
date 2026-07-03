@@ -679,6 +679,33 @@ class DuplicateScannerTests(unittest.TestCase):
 
         self.assertEqual([record.path for record in result.keep_records], [safe.path])
 
+    def test_keep_rule_prefers_library_like_directory(self) -> None:
+        root = Path("D:/demo")
+        library = FileRecord(path=root / "照片资料库" / "photo.jpg", size=10, modified_at=1.0, width=100, height=100)
+        download = FileRecord(path=root / "Downloads" / "photo.jpg", size=1000, modified_at=10.0, width=200, height=200)
+
+        result = choose_keep_records([library, download], "保留资料库目录")
+
+        self.assertEqual([record.path for record in result.keep_records], [library.path])
+
+    def test_keep_rule_avoids_cache_like_directory(self) -> None:
+        root = Path("D:/demo")
+        clean = FileRecord(path=root / "album" / "photo.jpg", size=10, modified_at=1.0, width=100, height=100)
+        cached = FileRecord(path=root / "wechat_cache" / "photo.jpg", size=1000, modified_at=10.0, width=200, height=200)
+
+        result = choose_keep_records([clean, cached], "保留非缓存目录")
+
+        self.assertEqual([record.path for record in result.keep_records], [clean.path])
+
+    def test_keep_rule_prefers_drive_with_most_duplicates(self) -> None:
+        c_old = FileRecord(path=Path("C:/photos/a.jpg"), size=10, modified_at=1.0, width=100, height=100)
+        c_new = FileRecord(path=Path("C:/photos/b.jpg"), size=20, modified_at=2.0, width=120, height=120)
+        d_large = FileRecord(path=Path("D:/backup/a.jpg"), size=1000, modified_at=10.0, width=300, height=300)
+
+        result = choose_keep_records([c_old, c_new, d_large], "保留同磁盘最多项")
+
+        self.assertEqual([record.path for record in result.keep_records], [c_new.path])
+
     def test_processing_plan_skips_protected_unchecked_files(self) -> None:
         root = Path("D:/demo")
         protected = root / "library"

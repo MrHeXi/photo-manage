@@ -561,6 +561,9 @@ class MainWindow(QMainWindow):
                 "保留路径最短",
                 "保留路径最深",
                 "保留非副本命名",
+                "保留资料库目录",
+                "保留非缓存目录",
+                "保留同磁盘最多项",
             ]
         )
         self.organize_rule_combo.addItems(["按拍摄年月", "按拍摄日期", "按文件类型", "按相机型号"])

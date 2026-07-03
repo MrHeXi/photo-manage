@@ -7,6 +7,8 @@ from photo_dedupe.core.models import DuplicateGroup, FileRecord
 
 
 COPY_HINTS = ("copy", "duplicate", "wechat", "weixin", "副本", "复制", "重复", "拷贝", "缓存")
+LIBRARY_HINTS = ("photos", "photo", "picture", "pictures", "library", "album", "camera", "dcim", "照片", "图片", "相册", "资料库", "原图")
+CACHE_HINTS = ("cache", "temp", "tmp", "download", "downloads", "wechat", "weixin", "qq", "缓存", "临时", "下载")
 
 
 @dataclass(slots=True)
@@ -44,6 +46,22 @@ def is_under_any(path: Path, roots: set[Path]) -> bool:
     return False
 
 
+def _quality_key(record: FileRecord) -> tuple[int, int, float]:
+    return ((record.width or 0) * (record.height or 0), record.size, record.modified_at)
+
+
+def _path_text(record: FileRecord) -> str:
+    return str(record.path).lower()
+
+
+def _parent_text(record: FileRecord) -> str:
+    return str(record.path.parent).lower()
+
+
+def _drive_key(record: FileRecord) -> str:
+    return (record.path.drive or record.path.anchor or (record.path.parts[0] if record.path.parts else "")).lower()
+
+
 def choose_keep_records(
     records: list[FileRecord],
     rule_label: str,
@@ -63,7 +81,7 @@ def choose_keep_records(
         return KeepRuleResult([max(records, key=lambda item: item.size)], "文件最大")
     if rule_label == "保留最高分辨率":
         return KeepRuleResult(
-            [max(records, key=lambda item: ((item.width or 0) * (item.height or 0), item.size, item.modified_at))],
+            [max(records, key=_quality_key)],
             "图片分辨率最高",
         )
     if rule_label == "保留路径最短":
@@ -79,12 +97,37 @@ def choose_keep_records(
         candidates = clean_records or records
         reason = "文件名不像副本" if clean_records else "未找到明显非副本文件，回退到最高质量"
         return KeepRuleResult(
-            [max(candidates, key=lambda item: ((item.width or 0) * (item.height or 0), item.size, item.modified_at))],
+            [max(candidates, key=_quality_key)],
             reason,
         )
+    if rule_label == "保留资料库目录":
+        library_records = [
+            record
+            for record in records
+            if any(hint in _parent_text(record) for hint in LIBRARY_HINTS)
+        ]
+        candidates = library_records or records
+        reason = "路径像资料库/相册目录" if library_records else "未找到资料库目录，回退到最高质量"
+        return KeepRuleResult([max(candidates, key=_quality_key)], reason)
+    if rule_label == "保留非缓存目录":
+        clean_records = [
+            record
+            for record in records
+            if not any(hint in _parent_text(record) for hint in CACHE_HINTS)
+        ]
+        candidates = clean_records or records
+        reason = "路径不像缓存/下载目录" if clean_records else "未找到非缓存目录，回退到最高质量"
+        return KeepRuleResult([max(candidates, key=_quality_key)], reason)
+    if rule_label == "保留同磁盘最多项":
+        drive_counts: dict[str, int] = {}
+        for record in records:
+            drive_counts[_drive_key(record)] = drive_counts.get(_drive_key(record), 0) + 1
+        preferred_drive = max(drive_counts, key=lambda drive: (drive_counts[drive], drive))
+        drive_records = [record for record in records if _drive_key(record) == preferred_drive]
+        return KeepRuleResult([max(drive_records, key=_quality_key)], "重复项最多的磁盘")
 
     return KeepRuleResult(
-        [max(records, key=lambda item: ((item.width or 0) * (item.height or 0), item.size, item.modified_at))],
+        [max(records, key=_quality_key)],
         "综合质量最高",
     )
 
