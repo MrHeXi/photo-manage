@@ -147,6 +147,10 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertIsNone(window.restore_worker)
                 self.assertIn("安全模式", window.status_label.text())
                 self.assertIn("跳过历史结果加载", window.group_status_label.text())
+                self.assertIn("添加扫描目录", window.group_status_label.text())
+                window.refresh_group_list()
+                self.assertIn("清空筛选", window.group_status_label.text())
+                self.assertIn("当前没有可预览的文件", window.detail_label.text())
             finally:
                 window.close()
                 app.processEvents()

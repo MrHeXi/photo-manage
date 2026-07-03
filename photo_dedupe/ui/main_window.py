@@ -79,6 +79,7 @@ APP_NAME = "Photo Manage GPT"
 APP_VERSION = __version__
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 APP_USER_MODEL_ID = "PhotoManageGPT.PhotoManageGPT.1"
+EMPTY_SCAN_GUIDANCE = "暂无重复分组。添加扫描目录，必要时先设为保护目录，然后开始扫描。"
 
 
 def app_asset_path(name: str) -> Path:
@@ -367,7 +368,8 @@ class MainWindow(QMainWindow):
         if self.safe_mode:
             self.history_state = "安全模式：已跳过历史缓存"
             self.status_label.setText("安全模式已启用")
-            self.group_status_label.setText("安全模式已跳过历史结果加载，可直接选择目录重新扫描。")
+            self.group_status_label.setText(f"安全模式已跳过历史结果加载。\n{EMPTY_SCAN_GUIDANCE}")
+            self.detail_label.setText("安全模式不会加载旧扫描缓存，适合排查启动卡住或历史数据异常。")
             self.refresh_health_diagnostics()
         else:
             self.status_label.setText("正在加载最近数据")
@@ -520,7 +522,7 @@ class MainWindow(QMainWindow):
     def on_restore_finished(self, session, payload) -> None:  # type: ignore[override]
         if session is None:
             self.status_label.setText("准备就绪")
-            self.group_status_label.setText("当前没有可恢复的扫描结果。")
+            self.group_status_label.setText(f"当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
             self.history_state = "当前没有可恢复的扫描结果"
             self.load_more_groups_button.setEnabled(False)
             self.refresh_health_diagnostics()
@@ -564,7 +566,7 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"已恢复全部 {self.restored_total_groups} 组已保存结果。")
         else:
             self.status_label.setText("准备就绪")
-            self.group_status_label.setText("当前没有可恢复的扫描结果。")
+            self.group_status_label.setText(f"当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
             self.history_state = "当前没有可恢复的扫描结果"
             self.load_more_groups_button.setEnabled(False)
         self.refresh_health_diagnostics()
@@ -1310,8 +1312,8 @@ class MainWindow(QMainWindow):
             self.file_table.setRowCount(0)
             self.thumbnail_list.clear()
             self.preview_label.setText("选择图片以预览")
-            self.detail_label.clear()
-            self.group_status_label.setText(f"当前筛选下没有匹配的重复分组。")
+            self.detail_label.setText("当前没有可预览的文件。")
+            self.group_status_label.setText(f"当前筛选下没有匹配的重复分组。\n可清空筛选，或添加目录后重新扫描。")
             return
 
         if min_size_bytes < 0:
@@ -2325,7 +2327,7 @@ class MainWindow(QMainWindow):
             self.directory_detail_table.setRowCount(0)
             self.file_table.setRowCount(0)
             self.thumbnail_list.clear()
-            self.group_status_label.setText("已删除当前扫描任务，当前没有可恢复的扫描结果。")
+            self.group_status_label.setText(f"已删除当前扫描任务，当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
             self.load_more_groups_button.setEnabled(False)
             self.load_more_groups_button.setText("继续加载更多")
         self.refresh_history()
@@ -2343,7 +2345,7 @@ class MainWindow(QMainWindow):
         self.database.clear_scanned_files()
         self.database.clear_scan_sessions()
         self.groups = []
-        self.group_status_label.setText("扫描历史已清空，当前没有可恢复的扫描结果。")
+        self.group_status_label.setText(f"扫描历史已清空，当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
         self.group_list.clear()
         self.directory_tree.clear()
         self.directory_detail_table.setRowCount(0)
