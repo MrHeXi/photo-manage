@@ -45,6 +45,7 @@ from photo_dedupe.core.ai_client import AiConfig, analyze_image
 from photo_dedupe.core.diagnostics import (
     build_health_items,
     default_log_path,
+    format_health_report,
     install_exception_logging,
     setup_logging,
 )
@@ -426,8 +427,8 @@ class MainWindow(QMainWindow):
             item.setForeground(QColor("#1a7f37") if is_protected else QColor("#24292f"))
             item.setToolTip("保护目录：批量处理会跳过此目录内文件。" if is_protected else str(path))
 
-    def refresh_health_diagnostics(self) -> None:
-        items = build_health_items(
+    def _current_health_items(self):
+        return build_health_items(
             database_path=self.database.path,
             log_path=self.health_log_path,
             ffmpeg_available=video_hash_available(),
@@ -436,6 +437,9 @@ class MainWindow(QMainWindow):
             loaded_groups=self.restored_loaded_groups,
             total_groups=self.restored_total_groups,
         )
+
+    def refresh_health_diagnostics(self) -> None:
+        items = self._current_health_items()
         self.health_summary_label.setText(
             f"启动日志：{self.health_log_path}\n遇到启动失败、后台残留或历史加载异常时，可先查看这里的诊断信息。"
         )
@@ -452,6 +456,17 @@ class MainWindow(QMainWindow):
                 table_item = status_cell if column == 1 else QTableWidgetItem(value)
                 self.health_table.setItem(row, column, table_item)
         self.health_table.resizeRowsToContents()
+
+    def export_health_report(self) -> None:
+        target, _ = QFileDialog.getSaveFileName(self, "导出诊断报告", "photo-manage-diagnostics.txt", "Text Files (*.txt)")
+        if not target:
+            return
+        try:
+            Path(target).write_text(format_health_report(self._current_health_items()), encoding="utf-8")
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        QMessageBox.information(self, "导出完成", target)
 
     def start_restore_session(self, session_id: int | None = None, offset_groups: int = 0) -> None:
         if self.restore_worker and self.restore_worker.isRunning():
@@ -595,6 +610,8 @@ class MainWindow(QMainWindow):
         filter_ai_button.clicked.connect(self.refresh_ai_results)
         refresh_health_button = QPushButton("刷新诊断")
         refresh_health_button.clicked.connect(self.refresh_health_diagnostics)
+        export_health_button = QPushButton("导出诊断报告")
+        export_health_button.clicked.connect(self.export_health_report)
 
         self.ai_provider_combo.addItems(["自定义", "OpenAI", "DashScope", "DeepSeek", "Moonshot", "Zhipu"])
         self.ai_provider_combo.currentTextChanged.connect(self.apply_ai_provider_preset)
@@ -894,7 +911,10 @@ class MainWindow(QMainWindow):
         self.health_summary_label.setWordWrap(True)
         health_layout.addWidget(self.health_summary_label)
         health_layout.addWidget(self.health_table)
-        health_layout.addWidget(refresh_health_button)
+        health_buttons = QHBoxLayout()
+        health_buttons.addWidget(refresh_health_button)
+        health_buttons.addWidget(export_health_button)
+        health_layout.addLayout(health_buttons)
 
         self.organize_photo_input.setText(str(self.organize_targets.photo_root))
         self.organize_video_input.setText(str(self.organize_targets.video_root))

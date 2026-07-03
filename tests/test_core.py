@@ -13,7 +13,7 @@ from PySide6.QtCore import QLockFile
 
 from photo_dedupe import __version__
 from photo_dedupe.core.ai_client import parse_chat_content, parse_score
-from photo_dedupe.core.diagnostics import build_health_items, default_log_path, setup_logging
+from photo_dedupe.core.diagnostics import DiagnosticItem, build_health_items, default_log_path, format_health_report, setup_logging
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
@@ -98,6 +98,18 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(by_name["启动日志"].status, "正常")
         self.assertEqual(by_name["视频指纹"].status, "可选缺失")
         self.assertIn("500/1200", by_name["历史缓存"].detail)
+
+    def test_format_health_report_is_plain_text(self) -> None:
+        report = format_health_report(
+            [
+                DiagnosticItem("应用版本", "正常", "0.1.0"),
+                DiagnosticItem("启动日志", "正常", "C:/logs/app.log"),
+            ]
+        )
+
+        self.assertIn("Photo Manage GPT 健康诊断报告", report)
+        self.assertIn("应用版本: 正常", report)
+        self.assertIn("C:/logs/app.log", report)
 
 
 class SingleInstanceTests(unittest.TestCase):

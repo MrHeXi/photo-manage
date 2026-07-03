@@ -137,3 +137,11 @@ def build_health_items(
     if app_version:
         items.insert(0, DiagnosticItem("应用版本", "正常", app_version))
     return items
+
+
+def format_health_report(items: list[DiagnosticItem]) -> str:
+    lines = ["Photo Manage GPT 健康诊断报告", ""]
+    for item in items:
+        lines.append(f"{item.name}: {item.status}")
+        lines.append(f"  {item.detail}")
+    return "\n".join(lines) + "\n"
