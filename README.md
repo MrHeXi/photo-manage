@@ -127,6 +127,12 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m photo_dedupe
 ```
 
+如果历史缓存异常导致启动卡住，可以使用安全模式跳过历史恢复：
+
+```powershell
+.\.venv\Scripts\python.exe -m photo_dedupe --safe-mode
+```
+
 也可以运行：
 
 ```powershell

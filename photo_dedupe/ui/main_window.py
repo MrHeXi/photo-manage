@@ -245,8 +245,9 @@ class RestoreSessionWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, safe_mode: bool = False) -> None:
         super().__init__()
+        self.safe_mode = safe_mode
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(load_app_icon())
         self.resize(1280, 820)
@@ -359,8 +360,14 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._update_destination_label()
         self.refresh_health_diagnostics()
-        self.status_label.setText("正在加载最近数据")
-        QTimer.singleShot(0, self._finish_startup)
+        if self.safe_mode:
+            self.history_state = "安全模式：已跳过历史缓存"
+            self.status_label.setText("安全模式已启用")
+            self.group_status_label.setText("安全模式已跳过历史结果加载，可直接选择目录重新扫描。")
+            self.refresh_health_diagnostics()
+        else:
+            self.status_label.setText("正在加载最近数据")
+            QTimer.singleShot(0, self._finish_startup)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self.media_player.stop()
@@ -2514,7 +2521,8 @@ def run() -> None:
     log_path = setup_logging()
     install_exception_logging()
     logger = logging.getLogger(__name__)
-    logger.info("Application startup requested; log=%s", log_path)
+    safe_mode = "--safe-mode" in sys.argv or "/safe-mode" in sys.argv
+    logger.info("Application startup requested; log=%s safe_mode=%s", log_path, safe_mode)
     set_windows_app_user_model_id()
     try:
         app = QApplication(sys.argv)
@@ -2528,7 +2536,7 @@ def run() -> None:
         icon = load_app_icon()
         if not icon.isNull():
             app.setWindowIcon(icon)
-        window = MainWindow()
+        window = MainWindow(safe_mode=safe_mode)
         logger.info("Main window created")
         window.show()
         window.raise_()

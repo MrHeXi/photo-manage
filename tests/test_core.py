@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 import csv
 import json
 import logging
 from pathlib import Path
+from unittest.mock import patch
 
 from PySide6.QtCore import QLockFile
 
@@ -104,6 +106,24 @@ class SingleInstanceTests(unittest.TestCase):
                 self.assertFalse(second_lock.tryLock(100))
             finally:
                 first_lock.unlock()
+
+
+class MainWindowStartupTests(unittest.TestCase):
+    def test_safe_mode_skips_restore_worker(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from photo_dedupe.ui.main_window import MainWindow
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LOCALAPPDATA": directory}):
+            window = MainWindow(safe_mode=True)
+            try:
+                self.assertIsNone(window.restore_worker)
+                self.assertIn("安全模式", window.status_label.text())
+                self.assertIn("跳过历史结果加载", window.group_status_label.text())
+            finally:
+                window.close()
+                app.processEvents()
 
 
 class DuplicateScannerTests(unittest.TestCase):
