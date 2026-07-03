@@ -15,7 +15,13 @@ from photo_dedupe import __version__
 from photo_dedupe.core.ai_client import parse_chat_content, parse_score
 from photo_dedupe.core.diagnostics import DiagnosticItem, build_health_items, default_log_path, format_health_report, setup_logging
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
-from photo_dedupe.core.exporter import export_ai_analysis_csv, export_files_csv, export_operations_csv
+from photo_dedupe.core.exporter import (
+    build_duplicate_report_html,
+    export_ai_analysis_csv,
+    export_duplicate_report_html,
+    export_files_csv,
+    export_operations_csv,
+)
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.organizer import (
@@ -504,6 +510,44 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(rows[0][0], "path")
         self.assertIn("a.txt", rows[1][0])
+
+    def test_duplicate_report_html_contains_summary_and_escaped_paths(self) -> None:
+        group = DuplicateGroup(
+            kind="exact",
+            title="raw <group>",
+            records=[
+                FileRecord(path=Path("D:/photos/a&b.jpg"), size=10, modified_at=1.0, keep_selected=True),
+                FileRecord(path=Path("D:/backup/a&b.jpg"), size=10, modified_at=2.0),
+            ],
+        )
+
+        html = build_duplicate_report_html([group], "报告 <test>")
+
+        self.assertIn("报告 &lt;test&gt;", html)
+        self.assertIn("重复分组", html)
+        self.assertIn("完全重复", html)
+        self.assertIn("候选处理", html)
+        self.assertIn("a&amp;b.jpg", html)
+
+    def test_export_duplicate_report_html_writes_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "report.html"
+            group = DuplicateGroup(
+                kind="similar",
+                title="photo group",
+                records=[
+                    FileRecord(path=Path("D:/photos/a.jpg"), size=1024, modified_at=1.0, width=100, height=100),
+                    FileRecord(path=Path("D:/photos/b.jpg"), size=2048, modified_at=2.0, width=120, height=120),
+                ],
+                score=0.85,
+            )
+
+            export_duplicate_report_html([group], target)
+            content = target.read_text(encoding="utf-8")
+
+        self.assertIn("相似图片", content)
+        self.assertIn("85%", content)
+        self.assertIn("3.0 KB", content)
 
     def test_clear_scanned_files_removes_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

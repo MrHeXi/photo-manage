@@ -50,7 +50,7 @@ from photo_dedupe.core.diagnostics import (
     setup_logging,
 )
 from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory_duplicate_index
-from photo_dedupe.core.exporter import export_ai_analysis_csv, export_files_csv, export_operations_csv
+from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
 from photo_dedupe.core.hashers import is_image, is_video
 from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
@@ -468,6 +468,24 @@ class MainWindow(QMainWindow):
             return
         QMessageBox.information(self, "导出完成", target)
 
+    def export_current_duplicate_report(self) -> None:
+        groups, min_size_bytes, max_size_bytes = self._visible_groups()
+        if min_size_bytes < 0 or max_size_bytes < 0:
+            QMessageBox.information(self, "筛选条件无效", "可整理空间筛选请输入数字，例如 500 或 1.5。")
+            return
+        if not groups:
+            QMessageBox.information(self, "没有可导出内容", "当前筛选下没有重复分组。")
+            return
+        target, _ = QFileDialog.getSaveFileName(self, "导出当前扫描报告", "duplicate-report.html", "HTML Files (*.html)")
+        if not target:
+            return
+        try:
+            export_duplicate_report_html(groups, Path(target), "Photo Manage GPT 当前重复报告")
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        QMessageBox.information(self, "导出完成", target)
+
     def start_restore_session(self, session_id: int | None = None, offset_groups: int = 0) -> None:
         if self.restore_worker and self.restore_worker.isRunning():
             return
@@ -681,6 +699,8 @@ class MainWindow(QMainWindow):
         self.group_max_size_unit_combo.currentIndexChanged.connect(self.refresh_group_list)
         clear_group_filters_button = QPushButton("清空分组筛选")
         clear_group_filters_button.clicked.connect(self.clear_group_filters)
+        export_report_button = QPushButton("导出当前报告")
+        export_report_button.clicked.connect(self.export_current_duplicate_report)
         self.load_more_groups_button.clicked.connect(self.load_more_restored_groups)
         self.load_more_groups_button.setEnabled(False)
         self.group_list.currentItemChanged.connect(self.populate_group)
@@ -738,6 +758,7 @@ class MainWindow(QMainWindow):
         group_size_filter_row.addWidget(self.group_max_size_unit_combo)
         groups_layout.addLayout(group_size_filter_row)
         groups_layout.addWidget(clear_group_filters_button)
+        groups_layout.addWidget(export_report_button)
         groups_layout.addWidget(self.load_more_groups_button)
         groups_layout.addWidget(self.group_stack)
 
