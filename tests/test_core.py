@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QLockFile
 
+from photo_dedupe import __version__
 from photo_dedupe.core.ai_client import parse_chat_content, parse_score
 from photo_dedupe.core.diagnostics import build_health_items, default_log_path, setup_logging
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
@@ -41,6 +42,11 @@ class BrandingAssetTests(unittest.TestCase):
             path = assets / filename
             self.assertTrue(path.exists(), filename)
             self.assertGreater(path.stat().st_size, 0, filename)
+
+    def test_package_version_matches_pyproject(self) -> None:
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+        self.assertIn(f'version = "{__version__}"', pyproject.read_text(encoding="utf-8"))
 
 
 class DiagnosticsTests(unittest.TestCase):
@@ -81,11 +87,13 @@ class DiagnosticsTests(unittest.TestCase):
                 log_path=log_path,
                 ffmpeg_available=False,
                 history_state="已恢复部分历史结果",
+                app_version=__version__,
                 loaded_groups=500,
                 total_groups=1200,
             )
 
         by_name = {item.name: item for item in items}
+        self.assertEqual(by_name["应用版本"].detail, __version__)
         self.assertEqual(by_name["数据库"].status, "正常")
         self.assertEqual(by_name["启动日志"].status, "正常")
         self.assertEqual(by_name["视频指纹"].status, "可选缺失")

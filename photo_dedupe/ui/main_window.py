@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from photo_dedupe import __version__
 from photo_dedupe.core.ai_client import AiConfig, analyze_image
 from photo_dedupe.core.diagnostics import (
     build_health_items,
@@ -74,6 +75,8 @@ from photo_dedupe.core.video_hash import video_hash_available
 
 
 APP_NAME = "Photo Manage GPT"
+APP_VERSION = __version__
+APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 APP_USER_MODEL_ID = "PhotoManageGPT.PhotoManageGPT.1"
 
 
@@ -248,7 +251,7 @@ class MainWindow(QMainWindow):
     def __init__(self, safe_mode: bool = False) -> None:
         super().__init__()
         self.safe_mode = safe_mode
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(load_app_icon())
         self.resize(1280, 820)
         self.setMinimumSize(1100, 720)
@@ -429,6 +432,7 @@ class MainWindow(QMainWindow):
             log_path=self.health_log_path,
             ffmpeg_available=video_hash_available(),
             history_state=self.history_state,
+            app_version=APP_VERSION,
             loaded_groups=self.restored_loaded_groups,
             total_groups=self.restored_total_groups,
         )

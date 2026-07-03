@@ -104,6 +104,7 @@ def build_health_items(
     log_path: Path,
     ffmpeg_available: bool,
     history_state: str,
+    app_version: str | None = None,
     loaded_groups: int = 0,
     total_groups: int = 0,
 ) -> list[DiagnosticItem]:
@@ -126,10 +127,13 @@ def build_health_items(
     else:
         history_detail = history_state
 
-    return [
+    items = [
         DiagnosticItem("数据库", database_status, database_detail),
         DiagnosticItem("启动日志", log_status, log_detail),
         DiagnosticItem("视频指纹", "正常" if ffmpeg_available else "可选缺失", "已检测到 ffmpeg" if ffmpeg_available else "未检测到 ffmpeg，相似视频检测会跳过"),
         DiagnosticItem("历史缓存", "正常" if loaded_groups or total_groups else "待加载", history_detail),
         DiagnosticItem("运行环境", "正常", f"Python {sys.version.split()[0]} / {platform.platform()}"),
     ]
+    if app_version:
+        items.insert(0, DiagnosticItem("应用版本", "正常", app_version))
+    return items
