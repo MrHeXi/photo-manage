@@ -312,6 +312,7 @@ class MainWindow(QMainWindow):
         self.organize_preview_table = QTableWidget(0, 4)
         self.action_combo = QComboBox()
         self.bulk_keep_rule_combo = QComboBox()
+        self.bulk_keep_keyword_input = QLineEdit()
         self.organize_rule_combo = QComboBox()
         self.strategy_combo = QComboBox()
         self.ai_provider_combo = QComboBox()
@@ -603,8 +604,12 @@ class MainWindow(QMainWindow):
                 "保留资料库目录",
                 "保留非缓存目录",
                 "保留同磁盘最多项",
+                "保留路径包含关键词",
+                "保留文件名包含关键词",
+                "保留路径不含关键词",
             ]
         )
+        self.bulk_keep_keyword_input.setPlaceholderText("关键词，例如 相册、原图、工作、backup")
         self.organize_rule_combo.addItems(["按拍摄年月", "按拍摄日期", "按文件类型", "按相机型号"])
         organize_button = QPushButton("执行整理规则")
         organize_button.clicked.connect(self.organize_by_rule)
@@ -799,6 +804,7 @@ class MainWindow(QMainWindow):
         self.bulk_rule_hint_label.setWordWrap(True)
         right_layout.addWidget(QLabel("批量保留规则"))
         right_layout.addWidget(self.bulk_keep_rule_combo)
+        right_layout.addWidget(self.bulk_keep_keyword_input)
         bulk_rule_actions = QHBoxLayout()
         preview_rule_button = QPushButton("预览应用规则")
         preview_rule_button.clicked.connect(self.preview_bulk_keep_rule)
@@ -2003,14 +2009,16 @@ class MainWindow(QMainWindow):
             self.bulk_rule_hint_label.setText("当前筛选下没有可应用规则的重复分组。")
             return
         rule_label = self.bulk_keep_rule_combo.currentText()
+        keyword = self.bulk_keep_keyword_input.text().strip()
         protected_hits = 0
         keep_count = 0
         for group in groups:
-            result = choose_keep_records(group.records, rule_label, self.protected_roots)
+            result = choose_keep_records(group.records, rule_label, self.protected_roots, keyword=keyword)
             keep_count += len(result.keep_records)
             protected_hits += sum(1 for record in result.keep_records if is_under_any(record.path, self.protected_roots))
+        keyword_text = f"，关键词“{keyword}”" if keyword else ""
         self.bulk_rule_hint_label.setText(
-            f"预览：规则“{rule_label}”将作用于当前筛选的 {len(groups)} 组，保留 {keep_count} 个文件，其中保护目录命中 {protected_hits} 个。"
+            f"预览：规则“{rule_label}”{keyword_text}将作用于当前筛选的 {len(groups)} 组，保留 {keep_count} 个文件，其中保护目录命中 {protected_hits} 个。"
         )
 
     def apply_bulk_keep_rule(self) -> None:
@@ -2019,10 +2027,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "没有可应用分组", "当前筛选下没有重复分组。")
             return
         rule_label = self.bulk_keep_rule_combo.currentText()
+        keyword = self.bulk_keep_keyword_input.text().strip()
         changed_groups = 0
         keep_count = 0
         for group in groups:
-            result = choose_keep_records(group.records, rule_label, self.protected_roots)
+            result = choose_keep_records(group.records, rule_label, self.protected_roots, keyword=keyword)
             keep_paths = {record.path for record in result.keep_records}
             if not keep_paths:
                 continue
@@ -2035,8 +2044,9 @@ class MainWindow(QMainWindow):
         self.keep_state_dirty = True
         self._persist_keep_state()
         self.refresh_group_list()
+        keyword_text = f"，关键词“{keyword}”" if keyword else ""
         self.bulk_rule_hint_label.setText(
-            f"已应用规则“{rule_label}”：更新 {changed_groups} 组，保留 {keep_count} 个文件。"
+            f"已应用规则“{rule_label}”{keyword_text}：更新 {changed_groups} 组，保留 {keep_count} 个文件。"
         )
         self.status_label.setText("批量保留规则已应用")
 

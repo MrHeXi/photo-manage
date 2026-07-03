@@ -66,6 +66,7 @@ def choose_keep_records(
     records: list[FileRecord],
     rule_label: str,
     protected_roots: set[Path] | None = None,
+    keyword: str = "",
 ) -> KeepRuleResult:
     if not records:
         return KeepRuleResult([], "没有可保留的文件")
@@ -125,6 +126,23 @@ def choose_keep_records(
         preferred_drive = max(drive_counts, key=lambda drive: (drive_counts[drive], drive))
         drive_records = [record for record in records if _drive_key(record) == preferred_drive]
         return KeepRuleResult([max(drive_records, key=_quality_key)], "重复项最多的磁盘")
+    normalized_keyword = keyword.strip().lower()
+    if rule_label in {"保留路径包含关键词", "保留文件名包含关键词", "保留路径不含关键词"}:
+        if not normalized_keyword:
+            return KeepRuleResult([max(records, key=_quality_key)], "未填写关键词，回退到最高质量")
+        if rule_label == "保留路径包含关键词":
+            keyword_records = [record for record in records if normalized_keyword in _path_text(record)]
+            reason = f"路径包含关键词：{keyword}"
+        elif rule_label == "保留文件名包含关键词":
+            keyword_records = [record for record in records if normalized_keyword in record.name.lower()]
+            reason = f"文件名包含关键词：{keyword}"
+        else:
+            keyword_records = [record for record in records if normalized_keyword not in _path_text(record)]
+            reason = f"路径不含关键词：{keyword}"
+        candidates = keyword_records or records
+        if not keyword_records:
+            reason = "未命中关键词，回退到最高质量"
+        return KeepRuleResult([max(candidates, key=_quality_key)], reason)
 
     return KeepRuleResult(
         [max(records, key=_quality_key)],

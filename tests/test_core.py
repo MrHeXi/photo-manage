@@ -788,6 +788,30 @@ class DuplicateScannerTests(unittest.TestCase):
 
         self.assertEqual([record.path for record in result.keep_records], [c_new.path])
 
+    def test_keep_rule_prefers_path_keyword(self) -> None:
+        album = FileRecord(path=Path("D:/album/photo.jpg"), size=10, modified_at=1.0)
+        backup = FileRecord(path=Path("D:/backup/photo.jpg"), size=100, modified_at=2.0)
+
+        result = choose_keep_records([album, backup], "保留路径包含关键词", keyword="album")
+
+        self.assertEqual([record.path for record in result.keep_records], [album.path])
+
+    def test_keep_rule_prefers_name_keyword(self) -> None:
+        original = FileRecord(path=Path("D:/photos/photo-original.jpg"), size=10, modified_at=1.0)
+        copy = FileRecord(path=Path("D:/photos/photo-copy.jpg"), size=100, modified_at=2.0)
+
+        result = choose_keep_records([original, copy], "保留文件名包含关键词", keyword="original")
+
+        self.assertEqual([record.path for record in result.keep_records], [original.path])
+
+    def test_keep_rule_prefers_path_without_keyword(self) -> None:
+        clean = FileRecord(path=Path("D:/album/photo.jpg"), size=10, modified_at=1.0)
+        cache = FileRecord(path=Path("D:/cache/photo.jpg"), size=100, modified_at=2.0)
+
+        result = choose_keep_records([clean, cache], "保留路径不含关键词", keyword="cache")
+
+        self.assertEqual([record.path for record in result.keep_records], [clean.path])
+
     def test_processing_plan_skips_protected_unchecked_files(self) -> None:
         root = Path("D:/demo")
         protected = root / "library"
