@@ -54,6 +54,12 @@ class BrandingAssetTests(unittest.TestCase):
 
         self.assertIn(f'version = "{__version__}"', pyproject.read_text(encoding="utf-8"))
 
+    def test_safe_mode_script_is_available(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "run-safe.ps1"
+
+        self.assertTrue(script.exists())
+        self.assertIn("--safe-mode", script.read_text(encoding="utf-8"))
+
 
 class DiagnosticsTests(unittest.TestCase):
     def test_default_log_path_uses_app_logs_directory(self) -> None:

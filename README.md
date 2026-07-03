@@ -139,6 +139,12 @@ py -3.10 -m venv .venv
 .\run.ps1
 ```
 
+安全模式也可以直接运行：
+
+```powershell
+.\run-safe.ps1
+```
+
 ## 打包 EXE
 
 ```powershell
