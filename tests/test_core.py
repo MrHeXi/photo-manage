@@ -60,6 +60,14 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertTrue(script.exists())
         self.assertIn("--safe-mode", script.read_text(encoding="utf-8"))
 
+    def test_release_package_script_includes_safe_launcher(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "package.ps1"
+        content = script.read_text(encoding="utf-8")
+
+        self.assertIn("Compress-Archive", content)
+        self.assertIn("photo_dedupe.__version__", content)
+        self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
+
 
 class DiagnosticsTests(unittest.TestCase):
     def test_default_log_path_uses_app_logs_directory(self) -> None:

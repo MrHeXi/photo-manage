@@ -153,6 +153,14 @@ py -3.10 -m venv .venv
 
 如果打包时报 `PermissionError`，通常是旧的 `PhotoManageGPT.exe` 还在运行。请先关闭软件，必要时在任务管理器中结束 `PhotoManageGPT.exe` 后再打包。
 
+生成便携发布包：
+
+```powershell
+.\package.ps1
+```
+
+发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，里面包含主程序、README 和安全模式启动入口。
+
 ## 测试
 
 ```powershell
