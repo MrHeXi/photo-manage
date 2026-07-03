@@ -65,6 +65,33 @@ from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import video_hash_available
 
 
+APP_NAME = "Photo Manage GPT"
+APP_USER_MODEL_ID = "PhotoManageGPT.PhotoManageGPT.1"
+
+
+def app_asset_path(name: str) -> Path:
+    return Path(__file__).resolve().parents[1] / "assets" / name
+
+
+def load_app_icon() -> QIcon:
+    for filename in ("app_icon.png", "app_icon.ico"):
+        path = app_asset_path(filename)
+        if path.exists():
+            return QIcon(str(path))
+    return QIcon()
+
+
+def set_windows_app_user_model_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
 def format_size(size: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
     value = float(size)
@@ -209,7 +236,8 @@ class RestoreSessionWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Photo Manage GPT")
+        self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(load_app_icon())
         self.resize(1280, 820)
         self.setMinimumSize(1100, 720)
 
@@ -2403,8 +2431,12 @@ class MainWindow(QMainWindow):
 
 
 def run() -> None:
+    set_windows_app_user_model_id()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
+    icon = load_app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     window = MainWindow()
     window.show()
     window.raise_()

@@ -6,7 +6,6 @@ if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
 
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m pip install pyinstaller
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --windowed --name PhotoManageGPT photo_dedupe\__main__.py
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean PhotoManageGPT.spec
 
 Write-Host "Build finished: dist\PhotoManageGPT\PhotoManageGPT.exe"
-

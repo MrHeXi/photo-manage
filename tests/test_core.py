@@ -26,6 +26,16 @@ from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import combine_hashes
 
 
+class BrandingAssetTests(unittest.TestCase):
+    def test_app_icon_assets_exist(self) -> None:
+        assets = Path(__file__).resolve().parents[1] / "photo_dedupe" / "assets"
+
+        for filename in ("app_icon.ico", "app_icon.png"):
+            path = assets / filename
+            self.assertTrue(path.exists(), filename)
+            self.assertGreater(path.stat().st_size, 0, filename)
+
+
 class DuplicateScannerTests(unittest.TestCase):
     def test_finds_exact_duplicates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

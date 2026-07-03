@@ -16,6 +16,7 @@
 - 整理中心：按照片 / 视频 / 文档 / 其他分流到不同目标目录，支持仅整理重复组中的保留文件。
 - AI 判断：兼容 OpenAI 风格 `chat/completions` 视觉模型 API，支持单张图片、当前分组批量分析、低分筛选和 CSV 导出。
 - 操作记录：记录移动和回收站操作；普通移动支持撤销。
+- 品牌外观：内置应用图标，覆盖窗口、任务栏和打包后的 `PhotoManageGPT.exe`。
 
 ## 推荐工作流
 
@@ -135,7 +136,7 @@ py -3.10 -m venv .venv
 ## 打包 EXE
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --windowed --name PhotoManageGPT photo_dedupe\__main__.py
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean PhotoManageGPT.spec
 ```
 
 如果打包时报 `PermissionError`，通常是旧的 `PhotoManageGPT.exe` 还在运行。请先关闭软件，必要时在任务管理器中结束 `PhotoManageGPT.exe` 后再打包。
