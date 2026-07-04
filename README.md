@@ -178,7 +178,7 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m photo_dedupe --release-check
 ```
 
-发布自检会检查版本号、图标、PyInstaller 配置、README、安全模式启动器、EXE 产物和发布脚本。`发布 zip` 未生成时只会提醒；真正发布前运行 `.\package.ps1` 即可生成 zip。
+发布自检会检查版本号、图标、PyInstaller 配置、README、安全模式启动器、EXE 产物、发布 Manifest 和发布脚本。`发布 zip` 未生成时只会提醒；真正发布前运行 `.\package.ps1` 即可生成 zip。
 
 生成便携发布包：
 
@@ -186,7 +186,7 @@ py -3.10 -m venv .venv
 .\package.ps1
 ```
 
-发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，里面包含主程序、README 和安全模式启动入口。
+发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，里面包含主程序、README、安全模式启动入口和 `RELEASE-MANIFEST.json`。Manifest 会记录版本、生成时间、入口文件、安全说明和文件 SHA-256，方便发布后核对。
 
 ## 测试
 

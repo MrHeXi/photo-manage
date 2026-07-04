@@ -1,7 +1,5 @@
 $ErrorActionPreference = "Stop"
 
-.\build.ps1
-
 $python = ".\.venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
     $python = "py"
@@ -11,14 +9,30 @@ $version = (& $python -c "import photo_dedupe; print(photo_dedupe.__version__)")
 $releaseDir = Join-Path "release" "PhotoManageGPT-v$version-win64"
 $zipPath = "$releaseDir.zip"
 
-& $python -m photo_dedupe --release-check
+function Remove-PathWithRetry {
+    param([string]$Path)
 
-if (Test-Path $releaseDir) {
-    Remove-Item -LiteralPath $releaseDir -Recurse -Force
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -eq 5) {
+                throw "无法清理旧发布产物 $Path，可能正在被资源管理器、杀毒软件或压缩工具占用。请关闭相关窗口后重试。原始错误：$($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds 800
+        }
+    }
 }
-if (Test-Path $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
-}
+
+Remove-PathWithRetry $releaseDir
+Remove-PathWithRetry $zipPath
+
+.\build.ps1
 
 New-Item -ItemType Directory -Path $releaseDir | Out-Null
 Copy-Item -Path "dist\PhotoManageGPT\*" -Destination $releaseDir -Recurse
@@ -29,6 +43,17 @@ $safeModeLauncher = @"
 start "" "%~dp0PhotoManageGPT.exe" --safe-mode
 "@
 Set-Content -Path (Join-Path $releaseDir "PhotoManageGPT-safe-mode.cmd") -Value $safeModeLauncher -Encoding ASCII
+& $python -m photo_dedupe --write-release-manifest $releaseDir
 
-Compress-Archive -Path (Join-Path $releaseDir "*") -DestinationPath $zipPath -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zipFullPath = Join-Path (Resolve-Path ".") $zipPath
+$releaseFullPath = (Resolve-Path $releaseDir).Path
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $releaseFullPath,
+    $zipFullPath,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $false
+)
+
+& $python -m photo_dedupe --release-check
 Write-Host "Release package: $zipPath"

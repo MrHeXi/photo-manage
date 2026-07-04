@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from photo_dedupe.core.release_manifest import MANIFEST_FILENAME
 
 
 STATUS_OK = "通过"
@@ -41,6 +44,7 @@ def run_release_check(project_root: Path | None = None) -> ReleaseCheckReport:
     _check_scripts(root, items)
     _check_readme(root, items)
     _check_dist(root, items)
+    _check_release_manifest(root, items)
     _check_release_zip(root, items)
 
     return ReleaseCheckReport(tuple(items))
@@ -126,8 +130,10 @@ def _check_scripts(root: Path, items: list[ReleaseCheckItem]) -> None:
         problems.append("package.ps1 未生成安全模式启动器")
     if "README.md" not in package:
         problems.append("package.ps1 未复制 README")
-    if "Compress-Archive" not in package:
+    if "Compress-Archive" not in package and "CreateFromDirectory" not in package:
         problems.append("package.ps1 未生成 zip")
+    if "--write-release-manifest" not in package:
+        problems.append("package.ps1 未生成发布 Manifest")
     if "--release-check" not in package:
         problems.append("package.ps1 未运行发布自检")
     if problems:
@@ -162,8 +168,40 @@ def _check_release_zip(root: Path, items: list[ReleaseCheckItem]) -> None:
     zip_path = root / "release" / f"PhotoManageGPT-v{version}-win64.zip"
     if not zip_path.exists() or zip_path.stat().st_size == 0:
         items.append(ReleaseCheckItem("发布 zip", STATUS_WARN, "尚未生成发布 zip，可运行 .\\package.ps1"))
+        return
+
+    required = {"PhotoManageGPT.exe", "README.md", "PhotoManageGPT-safe-mode.cmd", MANIFEST_FILENAME}
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            bad_member = archive.testzip()
+            if bad_member:
+                items.append(ReleaseCheckItem("发布 zip", STATUS_ERROR, f"zip 内文件损坏：{bad_member}"))
+                return
+            names = {name.replace("\\", "/") for name in archive.namelist()}
+    except (OSError, zipfile.BadZipFile) as exc:
+        items.append(ReleaseCheckItem("发布 zip", STATUS_ERROR, f"无法读取发布 zip：{exc}"))
+        return
+
+    missing = sorted(required - names)
+    if missing:
+        items.append(ReleaseCheckItem("发布 zip", STATUS_ERROR, "zip 缺少：" + "、".join(missing)))
     else:
         items.append(ReleaseCheckItem("发布 zip", STATUS_OK, str(zip_path)))
+
+
+def _check_release_manifest(root: Path, items: list[ReleaseCheckItem]) -> None:
+    version = _current_version(root)
+    if not version:
+        items.append(ReleaseCheckItem("发布 Manifest", STATUS_WARN, "无法确认版本号，跳过 Manifest 检查"))
+        return
+    release_dir = root / "release" / f"PhotoManageGPT-v{version}-win64"
+    manifest = release_dir / MANIFEST_FILENAME
+    if not release_dir.exists():
+        items.append(ReleaseCheckItem("发布 Manifest", STATUS_WARN, "尚未生成发布目录，可运行 .\\package.ps1"))
+    elif not manifest.exists() or manifest.stat().st_size == 0:
+        items.append(ReleaseCheckItem("发布 Manifest", STATUS_ERROR, f"发布目录缺少 {MANIFEST_FILENAME}"))
+    else:
+        items.append(ReleaseCheckItem("发布 Manifest", STATUS_OK, str(manifest)))
 
 
 def _current_version(root: Path) -> str:

@@ -6,6 +6,7 @@ import unittest
 import csv
 import json
 import logging
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,6 +73,7 @@ from photo_dedupe.core.processing_risk import (
     format_processing_confirmation,
 )
 from photo_dedupe.core.release_check import STATUS_ERROR, STATUS_WARN, format_release_check_report, run_release_check
+from photo_dedupe.core.release_manifest import MANIFEST_FILENAME, build_release_manifest, write_release_manifest
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records, describe_keep_reasons
 from photo_dedupe.core.safety import SEVERITY_ERROR, SEVERITY_WARNING, validate_scan_roots
@@ -177,10 +179,11 @@ class BrandingAssetTests(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / "package.ps1"
         content = script.read_text(encoding="utf-8")
 
-        self.assertIn("Compress-Archive", content)
+        self.assertIn("CreateFromDirectory", content)
         self.assertIn("photo_dedupe.__version__", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
         self.assertIn("--release-check", content)
+        self.assertIn("--write-release-manifest", content)
 
     def test_build_script_runs_release_check(self) -> None:
         script = Path(__file__).resolve().parents[1] / "build.ps1"
@@ -206,6 +209,37 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertTrue(any(item.name == "发布 zip" and item.status == STATUS_WARN for item in report.items))
         self.assertIn("结论：通过", text)
 
+    def test_release_manifest_records_files_and_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._create_release_tree(Path(directory))
+            release_dir = root / "release" / "PhotoManageGPT-v0.1.0-win64"
+            manifest_path = write_release_manifest(release_dir, "0.1.0")
+            manifest = build_release_manifest(release_dir, "0.1.0")
+
+        self.assertEqual(manifest_path.name, MANIFEST_FILENAME)
+        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertTrue(any(item["path"] == "PhotoManageGPT.exe" and len(item["sha256"]) == 64 for item in manifest["files"]))
+        self.assertTrue(any("默认不做永久删除" in note for note in manifest["safety"]))
+
+    def test_release_check_fails_if_existing_release_dir_lacks_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._create_release_tree(Path(directory), with_manifest=False)
+
+            report = run_release_check(root)
+
+        self.assertFalse(report.passed)
+        self.assertTrue(any(item.name == "发布 Manifest" and item.status == STATUS_ERROR for item in report.items))
+
+    def test_release_check_validates_zip_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._create_release_tree(Path(directory))
+            self._create_release_zip(root, include_manifest=False)
+
+            report = run_release_check(root)
+
+        self.assertFalse(report.passed)
+        self.assertTrue(any(item.name == "发布 zip" and item.status == STATUS_ERROR for item in report.items))
+
     def test_release_check_fails_without_exe(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self._create_release_tree(Path(directory))
@@ -216,17 +250,19 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertTrue(any(item.name == "EXE 产物" and item.status == STATUS_ERROR for item in report.items))
 
-    def _create_release_tree(self, root: Path) -> Path:
+    def _create_release_tree(self, root: Path, with_manifest: bool = True) -> Path:
         (root / "photo_dedupe" / "assets").mkdir(parents=True)
         (root / "photo_dedupe" / "ui").mkdir(parents=True)
         (root / "dist" / "PhotoManageGPT").mkdir(parents=True)
+        release_dir = root / "release" / "PhotoManageGPT-v0.1.0-win64"
+        release_dir.mkdir(parents=True)
         (root / "README.md").write_text(
             "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n",
             encoding="utf-8",
         )
         (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
         (root / "package.ps1").write_text(
-            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCompress-Archive\n--release-check\n",
+            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCreateFromDirectory\n--release-check\n--write-release-manifest\n",
             encoding="utf-8",
         )
         (root / "run-safe.ps1").write_text("--safe-mode\n", encoding="utf-8")
@@ -241,7 +277,24 @@ class BrandingAssetTests(unittest.TestCase):
         (root / "photo_dedupe" / "assets" / "app_icon.ico").write_bytes(b"icon")
         (root / "photo_dedupe" / "assets" / "app_icon.png").write_bytes(b"png")
         (root / "dist" / "PhotoManageGPT" / "PhotoManageGPT.exe").write_bytes(b"exe")
+        (release_dir / "PhotoManageGPT.exe").write_bytes(b"exe")
+        (release_dir / "README.md").write_text("readme", encoding="utf-8")
+        (release_dir / "PhotoManageGPT-safe-mode.cmd").write_text("--safe-mode", encoding="ascii")
+        if with_manifest:
+            write_release_manifest(release_dir, "0.1.0")
         return root
+
+    def _create_release_zip(self, root: Path, include_manifest: bool = True) -> Path:
+        release_dir = root / "release" / "PhotoManageGPT-v0.1.0-win64"
+        zip_path = root / "release" / "PhotoManageGPT-v0.1.0-win64.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            for path in release_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                if not include_manifest and path.name == MANIFEST_FILENAME:
+                    continue
+                archive.write(path, path.relative_to(release_dir).as_posix())
+        return zip_path
 
 
 class DiagnosticsTests(unittest.TestCase):

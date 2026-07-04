@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 
 def main() -> None:
@@ -10,6 +11,20 @@ def main() -> None:
         report = run_release_check()
         print(format_release_check_report(report))
         raise SystemExit(0 if report.passed else 1)
+
+    if "--write-release-manifest" in sys.argv:
+        from photo_dedupe import __version__
+        from photo_dedupe.core.release_manifest import write_release_manifest
+
+        index = sys.argv.index("--write-release-manifest")
+        try:
+            release_dir = Path(sys.argv[index + 1])
+        except IndexError:
+            print("缺少发布目录参数：--write-release-manifest <release-dir>")
+            raise SystemExit(2)
+        target = write_release_manifest(release_dir, __version__)
+        print(f"Release manifest: {target}")
+        raise SystemExit(0)
 
     from photo_dedupe.ui.main_window import run
 
