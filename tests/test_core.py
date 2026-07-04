@@ -35,9 +35,56 @@ from photo_dedupe.core.organizer import (
 )
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records
+from photo_dedupe.core.safety import SEVERITY_ERROR, SEVERITY_WARNING, validate_scan_roots
 from photo_dedupe.core.single_instance import default_lock_path
 from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import combine_hashes
+
+
+class ScanSafetyTests(unittest.TestCase):
+    def test_scan_safety_rejects_drive_root(self) -> None:
+        drive_root = Path(Path.cwd().anchor or "/")
+
+        issues = validate_scan_roots([drive_root])
+
+        self.assertTrue(any(issue.severity == SEVERITY_ERROR and "整盘根目录" in issue.title for issue in issues))
+
+    def test_scan_safety_rejects_windows_system_directory(self) -> None:
+        with patch.dict(os.environ, {"WINDIR": "C:\\Windows"}):
+            issues = validate_scan_roots([Path("C:/Windows/System32")])
+
+        self.assertTrue(any(issue.severity == SEVERITY_ERROR and "系统目录" in issue.title for issue in issues))
+
+    def test_scan_safety_rejects_target_inside_scan_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photos = root / "Photos"
+            photos.mkdir()
+
+            issues = validate_scan_roots([root], target_roots=[photos])
+
+        self.assertTrue(any(issue.severity == SEVERITY_ERROR and "处理目标目录" in issue.title for issue in issues))
+
+    def test_scan_safety_allows_normal_user_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Pictures"
+            target = Path(directory) / "Sorted"
+            root.mkdir()
+            target.mkdir()
+
+            issues = validate_scan_roots([root], target_roots=[target])
+
+        self.assertEqual(issues, [])
+
+    def test_scan_safety_warns_about_nested_scan_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Pictures"
+            child = root / "Trip"
+            child.mkdir(parents=True)
+
+            issues = validate_scan_roots([root, child])
+
+        self.assertTrue(any(issue.severity == SEVERITY_WARNING and "父目录" in issue.message for issue in issues))
 
 
 class BrandingAssetTests(unittest.TestCase):

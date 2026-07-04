@@ -70,6 +70,7 @@ from photo_dedupe.core.selection import (
     is_under_any,
     normalize_path,
 )
+from photo_dedupe.core.safety import SEVERITY_ERROR, ScanRootIssue, validate_scan_roots
 from photo_dedupe.core.single_instance import default_lock_path
 from photo_dedupe.core.storage import AppDatabase
 from photo_dedupe.core.video_hash import video_hash_available
@@ -1651,6 +1652,58 @@ class MainWindow(QMainWindow):
             other_root=Path(self.organize_other_input.text().strip() or str(self.destination / "Others")),
         )
 
+    def _scan_target_roots(self) -> list[Path]:
+        targets = self.current_organize_targets()
+        return [
+            self.destination,
+            targets.photo_root,
+            targets.video_root,
+            targets.document_root,
+            targets.other_root,
+        ]
+
+    def _format_scan_root_issues(self, issues: list[ScanRootIssue]) -> str:
+        visible = issues[:8]
+        lines = [
+            f"- {issue.title}\n  目录：{issue.path}\n  {issue.message}"
+            for issue in visible
+        ]
+        if len(issues) > len(visible):
+            lines.append(f"- 另有 {len(issues) - len(visible)} 个问题未显示，请先缩小扫描范围。")
+        return "\n".join(lines)
+
+    def _confirm_scan_roots_are_safe(self, roots: list[Path]) -> bool:
+        issues = validate_scan_roots(roots, self._scan_target_roots())
+        blocking_issues = [issue for issue in issues if issue.severity == SEVERITY_ERROR]
+        warning_issues = [issue for issue in issues if issue.severity != SEVERITY_ERROR]
+
+        if blocking_issues:
+            QMessageBox.warning(
+                self,
+                "扫描目录需要调整",
+                (
+                    "以下目录不适合直接扫描，为了避免卡死、权限错误或重复整理，已阻止本次扫描：\n\n"
+                    f"{self._format_scan_root_issues(blocking_issues)}"
+                ),
+            )
+            return False
+
+        if warning_issues:
+            reply = QMessageBox.question(
+                self,
+                "扫描前提醒",
+                (
+                    "扫描目录存在一些可能影响效率或结果的问题：\n\n"
+                    f"{self._format_scan_root_issues(warning_issues)}\n\n"
+                    "是否仍然继续扫描？"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            return reply == QMessageBox.StandardButton.Yes
+
+        return True
+
     def _group_key(self, group: DuplicateGroup) -> str:
         return f"{group.kind}|{group.title}|{'|'.join(str(record.path) for record in group.records)}"
 
@@ -1833,6 +1886,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "需要目录", "请先添加至少一个扫描目录。")
             return
         if self.worker and self.worker.isRunning():
+            return
+        if not self._confirm_scan_roots_are_safe(roots):
             return
 
         self.group_list.clear()
