@@ -84,6 +84,7 @@ from photo_dedupe.core.organize_profiles import (
     remove_profile,
     upsert_profile,
 )
+from photo_dedupe.core.onboarding import OnboardingSnapshot, build_onboarding_steps, onboarding_summary
 from photo_dedupe.core.progress_status import (
     format_progress_message,
     format_restore_status,
@@ -340,6 +341,7 @@ class MainWindow(QMainWindow):
         self.ai_table = QTableWidget(0, 5)
         self.health_table = QTableWidget(0, 3)
         self.organize_preview_table = QTableWidget(0, 4)
+        self.onboarding_table = QTableWidget(0, 4)
         self.action_combo = QComboBox()
         self.bulk_keep_rule_combo = QComboBox()
         self.bulk_keep_keyword_input = QLineEdit()
@@ -379,6 +381,7 @@ class MainWindow(QMainWindow):
         self.preview_stack = QStackedWidget()
         self.detail_label = QLabel("")
         self.organize_summary_label = QLabel("")
+        self.onboarding_summary_label = QLabel("")
         self.profile_summary_label = QLabel("")
         self.status_label = QLabel("准备就绪")
         self.progress = QProgressBar()
@@ -398,6 +401,7 @@ class MainWindow(QMainWindow):
         self._apply_styles()
         self._update_destination_label()
         self.refresh_health_diagnostics()
+        self.refresh_onboarding()
         if self.safe_mode:
             self.history_state = "安全模式：已跳过历史缓存"
             self.status_label.setText("安全模式已启用")
@@ -612,6 +616,7 @@ class MainWindow(QMainWindow):
             self.history_state = "当前没有可恢复的扫描结果"
             self.load_more_groups_button.setEnabled(False)
         self.refresh_health_diagnostics()
+        self.refresh_onboarding()
 
     def _default_destination(self) -> Path:
         desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
@@ -688,6 +693,20 @@ class MainWindow(QMainWindow):
         load_profile_button.clicked.connect(self.load_selected_profile)
         delete_profile_button = QPushButton("删除方案")
         delete_profile_button.clicked.connect(self.delete_selected_profile)
+        guide_add_folder_button = QPushButton("添加文件夹")
+        guide_add_folder_button.clicked.connect(self.guide_add_folder)
+        guide_protect_button = QPushButton("设为保护目录")
+        guide_protect_button.clicked.connect(self.guide_mark_protected_folder)
+        guide_scan_button = QPushButton("开始扫描")
+        guide_scan_button.clicked.connect(self.start_scan)
+        guide_rule_button = QPushButton("应用保留规则")
+        guide_rule_button.clicked.connect(self.guide_apply_keep_rule)
+        guide_preview_button = QPushButton("预览整理结果")
+        guide_preview_button.clicked.connect(self.guide_preview_organize)
+        guide_profile_button = QPushButton("保存方案")
+        guide_profile_button.clicked.connect(self.save_current_profile)
+        guide_refresh_button = QPushButton("刷新向导")
+        guide_refresh_button.clicked.connect(self.refresh_onboarding)
 
         self.ai_provider_combo.addItems(["自定义", "OpenAI", "DashScope", "DeepSeek", "Moonshot", "Zhipu"])
         self.ai_provider_combo.currentTextChanged.connect(self.apply_ai_provider_preset)
@@ -1012,6 +1031,37 @@ class MainWindow(QMainWindow):
         health_buttons.addWidget(export_health_button)
         health_layout.addLayout(health_buttons)
 
+        self.onboarding_table.setHorizontalHeaderLabels(["状态", "步骤", "当前情况", "快捷操作"])
+        self.onboarding_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.onboarding_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.onboarding_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.onboarding_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.onboarding_table.setAlternatingRowColors(True)
+        self.onboarding_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.onboarding_table.verticalHeader().setDefaultSectionSize(34)
+
+        onboarding_panel = QWidget()
+        onboarding_panel.setObjectName("ContentPanel")
+        onboarding_layout = QVBoxLayout(onboarding_panel)
+        onboarding_layout.setContentsMargins(14, 14, 14, 14)
+        onboarding_layout.setSpacing(10)
+        self.onboarding_summary_label.setWordWrap(True)
+        onboarding_actions = QGridLayout()
+        guide_buttons = (
+            guide_add_folder_button,
+            guide_protect_button,
+            guide_scan_button,
+            guide_rule_button,
+            guide_preview_button,
+            guide_profile_button,
+            guide_refresh_button,
+        )
+        for button_index, button in enumerate(guide_buttons):
+            onboarding_actions.addWidget(button, button_index // 4, button_index % 4)
+        onboarding_layout.addWidget(self.onboarding_summary_label)
+        onboarding_layout.addWidget(self.onboarding_table)
+        onboarding_layout.addLayout(onboarding_actions)
+
         self.organize_photo_input.setText(str(self.organize_targets.photo_root))
         self.organize_video_input.setText(str(self.organize_targets.video_root))
         self.organize_document_input.setText(str(self.organize_targets.document_root))
@@ -1071,6 +1121,7 @@ class MainWindow(QMainWindow):
 
         self.main_tabs = QTabWidget()
         tabs = self.main_tabs
+        tabs.addTab(onboarding_panel, "新手向导")
         tabs.addTab(organize_panel, "整理中心")
         tabs.addTab(right, "重复处理")
         tabs.addTab(operations_panel, "操作记录")
@@ -1237,12 +1288,14 @@ class MainWindow(QMainWindow):
             if folder not in existing:
                 self._add_folder_item(Path(folder))
                 existing.add(folder)
+        self.refresh_onboarding()
 
     def remove_folder(self) -> None:
         for item in self.folder_list.selectedItems():
             self.protected_roots.discard(normalize_path(self._folder_path_from_item(item)))
             self.folder_list.takeItem(self.folder_list.row(item))
         self._save_settings()
+        self.refresh_onboarding()
 
     def toggle_protected_folder(self) -> None:
         selected_items = self.folder_list.selectedItems()
@@ -1260,6 +1313,7 @@ class MainWindow(QMainWindow):
         self._refresh_folder_item_labels()
         self._save_settings()
         self.status_label.setText(f"保护目录已更新：{len(self.protected_roots)} 个")
+        self.refresh_onboarding()
 
     def choose_destination(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择重复文件移动目标", str(self.destination))
@@ -1268,6 +1322,7 @@ class MainWindow(QMainWindow):
             self._update_destination_label()
             self._save_settings()
             self.status_label.setText(f"目标目录：{self.destination}")
+            self.refresh_onboarding()
 
     def _update_destination_label(self) -> None:
         self.destination_label.setWordWrap(True)
@@ -1280,6 +1335,7 @@ class MainWindow(QMainWindow):
             return
         field.setText(folder)
         self._save_settings()
+        self.refresh_onboarding()
 
     def _load_profiles(self) -> None:
         self.organize_profiles = decode_profiles(self.database.get_setting(PROFILE_SETTINGS_KEY, ""))
@@ -1364,6 +1420,7 @@ class MainWindow(QMainWindow):
         self.organize_profiles = upsert_profile(self.organize_profiles, profile)
         self._save_profiles(select_name=name)
         self.status_label.setText(f"已保存整理方案：{name}")
+        self.refresh_onboarding()
 
     def load_selected_profile(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -1385,6 +1442,7 @@ class MainWindow(QMainWindow):
 
         self.apply_profile(profile)
         self.status_label.setText(f"已加载整理方案：{profile.name}")
+        self.refresh_onboarding()
 
     def delete_selected_profile(self) -> None:
         profile = self._selected_profile()
@@ -1397,6 +1455,7 @@ class MainWindow(QMainWindow):
         self.organize_profiles = remove_profile(self.organize_profiles, profile.name)
         self._save_profiles()
         self.status_label.setText(f"已删除整理方案：{profile.name}")
+        self.refresh_onboarding()
 
     def apply_profile(self, profile: OrganizeProfile) -> None:
         self.folder_list.clear()
@@ -1427,6 +1486,7 @@ class MainWindow(QMainWindow):
         self._save_settings()
         self.refresh_group_list()
         self.rebuild_directory_browser()
+        self.refresh_onboarding()
 
     def _profile_path_or_default(self, path: Path, default: Path) -> Path:
         return default if str(path).strip() in {"", "."} else path
@@ -1501,15 +1561,97 @@ class MainWindow(QMainWindow):
             self.on_scan_finished(groups, restored=True)
 
     def on_tab_changed(self, index: int) -> None:
-        if index == 2 and not self.operations_loaded:
+        tab_name = self.main_tabs.tabText(index)
+        if tab_name == "新手向导":
+            self.refresh_onboarding()
+        elif tab_name == "操作记录" and not self.operations_loaded:
             self.refresh_operations()
             self.operations_loaded = True
-        elif index == 3 and not self.history_loaded:
+        elif tab_name == "扫描历史" and not self.history_loaded:
             self.refresh_history()
             self.history_loaded = True
-        elif index == 4 and not self.ai_loaded:
+        elif tab_name == "AI 判断" and not self.ai_loaded:
             self.refresh_ai_results()
             self.ai_loaded = True
+
+    def _set_main_tab(self, label: str) -> None:
+        for index in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(index) == label:
+                self.main_tabs.setCurrentIndex(index)
+                return
+
+    def _onboarding_snapshot(self) -> OnboardingSnapshot:
+        keep_selected_count = sum(
+            1
+            for group in self.groups
+            for record in group.records
+            if record.keep_selected
+        )
+        target_count = sum(
+            1
+            for text in (
+                self.organize_photo_input.text(),
+                self.organize_video_input.text(),
+                self.organize_document_input.text(),
+                self.organize_other_input.text(),
+            )
+            if text.strip()
+        )
+        return OnboardingSnapshot(
+            scan_root_count=len(self._folder_paths()),
+            protected_root_count=len(self.protected_roots),
+            duplicate_group_count=len(self.groups),
+            keep_selected_count=keep_selected_count,
+            organize_target_count=target_count,
+            organize_preview_count=len(self.organize_preview_items),
+            profile_count=len(self.organize_profiles),
+        )
+
+    def refresh_onboarding(self) -> None:
+        steps = build_onboarding_steps(self._onboarding_snapshot())
+        self.onboarding_summary_label.setText(onboarding_summary(steps))
+        self.onboarding_table.setRowCount(len(steps))
+        for row, step in enumerate(steps):
+            values = [step.status, step.title, step.detail, step.action]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if column == 0:
+                    item.setForeground(self._onboarding_status_color(step.status))
+                self.onboarding_table.setItem(row, column, item)
+        self.onboarding_table.resizeRowsToContents()
+
+    def _onboarding_status_color(self, status: str) -> QColor:
+        if status == "完成":
+            return QColor("#1a7f37")
+        if status == "下一步":
+            return QColor("#0969da")
+        if status == "建议":
+            return QColor("#bf8700")
+        return QColor("#57606a")
+
+    def guide_add_folder(self) -> None:
+        self.add_folder()
+        self.refresh_onboarding()
+
+    def guide_mark_protected_folder(self) -> None:
+        if self.folder_list.count() == 0:
+            QMessageBox.information(self, "没有扫描目录", "请先添加一个扫描目录。")
+            return
+        if not self.folder_list.selectedItems():
+            self.folder_list.setCurrentRow(0)
+        self.toggle_protected_folder()
+        self.refresh_onboarding()
+
+    def guide_apply_keep_rule(self) -> None:
+        self._set_main_tab("重复处理")
+        self.apply_bulk_keep_rule()
+        self.refresh_onboarding()
+
+    def guide_preview_organize(self) -> None:
+        self._set_main_tab("整理中心")
+        self.preview_organize_plan()
+        self.refresh_onboarding()
 
     def on_group_mode_changed(self, index: int) -> None:
         self.group_stack.setCurrentIndex(index)
@@ -1874,8 +2016,9 @@ class MainWindow(QMainWindow):
             f" | 目标目录 {len(preview_summary.target_directories)} 个"
             f" | 跳过保护目录 {protected_skipped}"
         )
-        self.main_tabs.setCurrentIndex(0)
+        self._set_main_tab("整理中心")
         self.status_label.setText("已根据目录树选择生成整理预览")
+        self.refresh_onboarding()
 
     def current_organize_targets(self) -> OrganizeTargetConfig:
         return OrganizeTargetConfig(
@@ -2065,6 +2208,7 @@ class MainWindow(QMainWindow):
             summary_text += f" | 已跳过保护目录 {protected_skipped} 个文件"
         self.organize_summary_label.setText(summary_text)
         self.status_label.setText("整理预览已生成")
+        self.refresh_onboarding()
         self._save_settings()
 
     def execute_organize_plan(self) -> None:
@@ -2098,6 +2242,7 @@ class MainWindow(QMainWindow):
         self.organize_preview_table.setRowCount(0)
         self.organize_summary_label.setText(f"整理完成，共移动 {len(moved)} 个文件。")
         self.status_label.setText(f"整理完成：{len(moved)} 个文件")
+        self.refresh_onboarding()
         self.refresh_operations()
         if self.history_loaded:
             self.refresh_history()
@@ -2259,6 +2404,7 @@ class MainWindow(QMainWindow):
         if self.history_loaded and not restored:
             self.refresh_history()
         self.refresh_health_diagnostics()
+        self.refresh_onboarding()
 
     def on_scan_failed(self, message: str) -> None:
         QMessageBox.critical(self, "扫描失败", message)
@@ -2524,6 +2670,7 @@ class MainWindow(QMainWindow):
             f"已应用规则“{rule_label}”{keyword_text}：更新 {changed_groups} 组，保留 {keep_count} 个文件。"
         )
         self.status_label.setText("批量保留规则已应用")
+        self.refresh_onboarding()
 
     def _suggest_keep(self, records: list[FileRecord]) -> FileRecord:
         result = choose_keep_records(records, self.strategy_combo.currentText(), self.protected_roots)

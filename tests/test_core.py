@@ -49,6 +49,15 @@ from photo_dedupe.core.organize_profiles import (
     remove_profile,
     upsert_profile,
 )
+from photo_dedupe.core.onboarding import (
+    STATUS_DONE,
+    STATUS_NEXT,
+    STATUS_RECOMMENDED,
+    STATUS_WAITING,
+    OnboardingSnapshot,
+    build_onboarding_steps,
+    onboarding_summary,
+)
 from photo_dedupe.core.progress_status import (
     format_progress_message,
     format_restore_status,
@@ -317,6 +326,60 @@ class OrganizeProfileTests(unittest.TestCase):
         self.assertIn("保留最高质量", summary)
 
 
+class OnboardingTests(unittest.TestCase):
+    def test_empty_state_points_to_adding_scan_roots(self) -> None:
+        steps = build_onboarding_steps(
+            OnboardingSnapshot(
+                scan_root_count=0,
+                protected_root_count=0,
+                duplicate_group_count=0,
+                keep_selected_count=0,
+                organize_target_count=4,
+                organize_preview_count=0,
+                profile_count=0,
+            )
+        )
+
+        by_key = {step.key: step for step in steps}
+        self.assertEqual(by_key["scan_roots"].status, STATUS_NEXT)
+        self.assertEqual(by_key["protected_roots"].status, STATUS_WAITING)
+        self.assertIn("选择扫描目录", onboarding_summary(steps))
+
+    def test_selected_roots_recommend_protection_then_scan(self) -> None:
+        steps = build_onboarding_steps(
+            OnboardingSnapshot(
+                scan_root_count=2,
+                protected_root_count=0,
+                duplicate_group_count=0,
+                keep_selected_count=0,
+                organize_target_count=4,
+                organize_preview_count=0,
+                profile_count=0,
+            )
+        )
+
+        by_key = {step.key: step for step in steps}
+        self.assertEqual(by_key["scan_roots"].status, STATUS_DONE)
+        self.assertEqual(by_key["protected_roots"].status, STATUS_RECOMMENDED)
+        self.assertEqual(by_key["scan"].status, STATUS_NEXT)
+
+    def test_ready_state_marks_all_required_steps_done(self) -> None:
+        steps = build_onboarding_steps(
+            OnboardingSnapshot(
+                scan_root_count=2,
+                protected_root_count=1,
+                duplicate_group_count=12,
+                keep_selected_count=12,
+                organize_target_count=4,
+                organize_preview_count=30,
+                profile_count=1,
+            )
+        )
+
+        self.assertTrue(all(step.status == STATUS_DONE for step in steps))
+        self.assertIn("7/7", onboarding_summary(steps))
+
+
 class SingleInstanceTests(unittest.TestCase):
     def test_lock_file_blocks_second_instance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -368,6 +431,11 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertIn("安全模式", window.status_label.text())
                 self.assertIn("跳过历史结果加载", window.group_status_label.text())
                 self.assertIn("添加扫描目录", window.group_status_label.text())
+                tab_names = [window.main_tabs.tabText(index) for index in range(window.main_tabs.count())]
+                self.assertIn("新手向导", tab_names)
+                window.refresh_onboarding()
+                self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
+                self.assertIn("选择扫描目录", window.onboarding_summary_label.text())
                 window.refresh_group_list()
                 self.assertIn("清空筛选", window.group_status_label.text())
                 self.assertIn("当前没有可预览的文件", window.detail_label.text())
