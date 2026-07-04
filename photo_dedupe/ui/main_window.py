@@ -84,7 +84,7 @@ from photo_dedupe.core.organize_profiles import (
     remove_profile,
     upsert_profile,
 )
-from photo_dedupe.core.onboarding import OnboardingSnapshot, build_onboarding_steps, onboarding_summary
+from photo_dedupe.core.onboarding import OnboardingSnapshot, build_onboarding_steps, onboarding_primary_guidance, onboarding_summary
 from photo_dedupe.core.operation_report import (
     build_organize_result_report,
     build_processing_result_report,
@@ -388,6 +388,7 @@ class MainWindow(QMainWindow):
         self.detail_label = QLabel("")
         self.organize_summary_label = QLabel("")
         self.onboarding_summary_label = QLabel("")
+        self.onboarding_guidance_label = QLabel("")
         self.profile_summary_label = QLabel("")
         self.status_label = QLabel("准备就绪")
         self.progress = QProgressBar()
@@ -1052,6 +1053,7 @@ class MainWindow(QMainWindow):
         onboarding_layout.setContentsMargins(14, 14, 14, 14)
         onboarding_layout.setSpacing(10)
         self.onboarding_summary_label.setWordWrap(True)
+        self.onboarding_guidance_label.setWordWrap(True)
         onboarding_actions = QGridLayout()
         guide_buttons = (
             guide_add_folder_button,
@@ -1065,6 +1067,7 @@ class MainWindow(QMainWindow):
         for button_index, button in enumerate(guide_buttons):
             onboarding_actions.addWidget(button, button_index // 4, button_index % 4)
         onboarding_layout.addWidget(self.onboarding_summary_label)
+        onboarding_layout.addWidget(self.onboarding_guidance_label)
         onboarding_layout.addWidget(self.onboarding_table)
         onboarding_layout.addLayout(onboarding_actions)
 
@@ -1616,6 +1619,7 @@ class MainWindow(QMainWindow):
     def refresh_onboarding(self) -> None:
         steps = build_onboarding_steps(self._onboarding_snapshot())
         self.onboarding_summary_label.setText(onboarding_summary(steps))
+        self.onboarding_guidance_label.setText(onboarding_primary_guidance(steps))
         self.onboarding_table.setRowCount(len(steps))
         for row, step in enumerate(steps):
             values = [step.status, step.title, step.detail, step.action]

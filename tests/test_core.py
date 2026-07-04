@@ -63,6 +63,7 @@ from photo_dedupe.core.onboarding import (
     STATUS_WAITING,
     OnboardingSnapshot,
     build_onboarding_steps,
+    onboarding_primary_guidance,
     onboarding_summary,
 )
 from photo_dedupe.core.progress_status import (
@@ -473,6 +474,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(by_key["scan_roots"].status, STATUS_NEXT)
         self.assertEqual(by_key["protected_roots"].status, STATUS_WAITING)
         self.assertIn("选择扫描目录", onboarding_summary(steps))
+        self.assertIn("一次添加多个扫描目录", onboarding_primary_guidance(steps))
 
     def test_selected_roots_recommend_protection_then_scan(self) -> None:
         steps = build_onboarding_steps(
@@ -491,6 +493,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(by_key["scan_roots"].status, STATUS_DONE)
         self.assertEqual(by_key["protected_roots"].status, STATUS_RECOMMENDED)
         self.assertEqual(by_key["scan"].status, STATUS_NEXT)
+        self.assertIn("保护目录", onboarding_primary_guidance(steps))
 
     def test_ready_state_marks_all_required_steps_done(self) -> None:
         steps = build_onboarding_steps(
@@ -507,6 +510,7 @@ class OnboardingTests(unittest.TestCase):
 
         self.assertTrue(all(step.status == STATUS_DONE for step in steps))
         self.assertIn("7/7", onboarding_summary(steps))
+        self.assertIn("已经就绪", onboarding_primary_guidance(steps))
 
 
 class SingleInstanceTests(unittest.TestCase):
@@ -565,6 +569,7 @@ class MainWindowStartupTests(unittest.TestCase):
                 window.refresh_onboarding()
                 self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
                 self.assertIn("选择扫描目录", window.onboarding_summary_label.text())
+                self.assertIn("添加", window.onboarding_guidance_label.text())
                 window.refresh_group_list()
                 self.assertIn("清空筛选", window.group_status_label.text())
                 self.assertIn("当前没有可预览的文件", window.detail_label.text())
