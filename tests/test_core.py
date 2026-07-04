@@ -40,6 +40,15 @@ from photo_dedupe.core.organizer import (
     organize_images_by_date,
     summarize_organize_preview,
 )
+from photo_dedupe.core.organize_profiles import (
+    OrganizeProfile,
+    clean_profile_name,
+    decode_profiles,
+    encode_profiles,
+    profile_summary,
+    remove_profile,
+    upsert_profile,
+)
 from photo_dedupe.core.progress_status import (
     format_progress_message,
     format_restore_status,
@@ -219,6 +228,66 @@ class ProgressStatusTests(unittest.TestCase):
 
     def test_scan_start_mentions_root_count(self) -> None:
         self.assertIn("3 个目录", format_scan_start(3))
+
+
+class OrganizeProfileTests(unittest.TestCase):
+    def sample_profile(self, name: str = "照片库整理") -> OrganizeProfile:
+        return OrganizeProfile(
+            name=name,
+            scan_roots=(Path("D:/Photos"), Path("E:/Backup")),
+            protected_roots=(Path("D:/Photos/Library"),),
+            duplicate_destination=Path("D:/Duplicates"),
+            keep_strategy="保留最高质量",
+            bulk_keep_rule="保留保护目录内文件",
+            bulk_keep_keyword="原图",
+            processing_action="移动到目标目录",
+            similarity_threshold=8,
+            same_ratio_only=True,
+            same_resolution_only=False,
+            rotate_hint=True,
+            organize_rule="按拍摄年月",
+            organize_keep_only=True,
+            photo_target=Path("D:/Library/Photos"),
+            video_target=Path("D:/Library/Videos"),
+            document_target=Path("D:/Library/Documents"),
+            other_target=Path("D:/Library/Others"),
+        )
+
+    def test_profiles_round_trip_as_json(self) -> None:
+        profile = self.sample_profile()
+
+        restored = decode_profiles(encode_profiles([profile]))
+
+        self.assertEqual(restored, [profile])
+
+    def test_profile_name_is_trimmed_and_required(self) -> None:
+        self.assertEqual(clean_profile_name("  照片   整理  "), "照片 整理")
+        with self.assertRaises(ValueError):
+            clean_profile_name("   ")
+
+    def test_upsert_replaces_existing_profile_name(self) -> None:
+        original = self.sample_profile("Photos")
+        replacement = self.sample_profile("photos")
+
+        profiles = upsert_profile([original], replacement)
+
+        self.assertEqual(profiles, [replacement])
+
+    def test_remove_profile_uses_name(self) -> None:
+        profile = self.sample_profile("照片库")
+
+        self.assertEqual(remove_profile([profile], "照片库"), [])
+
+    def test_decode_profiles_ignores_invalid_payload(self) -> None:
+        self.assertEqual(decode_profiles("not json"), [])
+        self.assertEqual(decode_profiles('[{"name": ""}, {"name": "可用"}]')[0].name, "可用")
+
+    def test_profile_summary_mentions_core_counts_and_rules(self) -> None:
+        summary = profile_summary(self.sample_profile())
+
+        self.assertIn("扫描目录 2 个", summary)
+        self.assertIn("保护目录 1 个", summary)
+        self.assertIn("保留最高质量", summary)
 
 
 class SingleInstanceTests(unittest.TestCase):

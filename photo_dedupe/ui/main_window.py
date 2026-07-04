@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLineEdit,
     QLabel,
     QListView,
@@ -72,6 +73,16 @@ from photo_dedupe.core.organizer import (
     execute_organize_preview,
     organize_files,
     summarize_organize_preview,
+)
+from photo_dedupe.core.organize_profiles import (
+    PROFILE_SETTINGS_KEY,
+    OrganizeProfile,
+    clean_profile_name,
+    decode_profiles,
+    encode_profiles,
+    profile_summary,
+    remove_profile,
+    upsert_profile,
 )
 from photo_dedupe.core.progress_status import (
     format_progress_message,
@@ -303,12 +314,14 @@ class MainWindow(QMainWindow):
             other_root=Path(self.database.get_setting("target_other_root", str(self.destination / "Others"))),
         )
         self.organize_preview_items: list[OrganizePreviewItem] = []
+        self.organize_profiles: list[OrganizeProfile] = []
 
         self.folder_list = QListWidget()
         self.group_list = QListWidget()
         self.group_mode_combo = QComboBox()
         self.group_type_filter_combo = QComboBox()
         self.group_sort_combo = QComboBox()
+        self.profile_combo = QComboBox()
         self.group_search_input = QLineEdit()
         self.group_min_size_input = QLineEdit()
         self.group_min_size_unit_combo = QComboBox()
@@ -366,6 +379,7 @@ class MainWindow(QMainWindow):
         self.preview_stack = QStackedWidget()
         self.detail_label = QLabel("")
         self.organize_summary_label = QLabel("")
+        self.profile_summary_label = QLabel("")
         self.status_label = QLabel("准备就绪")
         self.progress = QProgressBar()
         self.media_player = QMediaPlayer(self)
@@ -668,6 +682,12 @@ class MainWindow(QMainWindow):
         refresh_health_button.clicked.connect(self.refresh_health_diagnostics)
         export_health_button = QPushButton("导出诊断报告")
         export_health_button.clicked.connect(self.export_health_report)
+        save_profile_button = QPushButton("保存方案")
+        save_profile_button.clicked.connect(self.save_current_profile)
+        load_profile_button = QPushButton("加载方案")
+        load_profile_button.clicked.connect(self.load_selected_profile)
+        delete_profile_button = QPushButton("删除方案")
+        delete_profile_button.clicked.connect(self.delete_selected_profile)
 
         self.ai_provider_combo.addItems(["自定义", "OpenAI", "DashScope", "DeepSeek", "Moonshot", "Zhipu"])
         self.ai_provider_combo.currentTextChanged.connect(self.apply_ai_provider_preset)
@@ -687,11 +707,16 @@ class MainWindow(QMainWindow):
         self.threshold_spin.setSuffix(" 位")
         self.threshold_spin.setToolTip("值越大，相似图片匹配越宽松。建议 6-10。")
         self.threshold_spin.valueChanged.connect(lambda _value: self._save_settings())
+        self.profile_combo.currentIndexChanged.connect(self.on_profile_selection_changed)
 
         folder_buttons = QHBoxLayout()
         folder_buttons.addWidget(add_button)
         folder_buttons.addWidget(remove_button)
         folder_buttons.addWidget(protect_button)
+        profile_buttons = QHBoxLayout()
+        profile_buttons.addWidget(save_profile_button)
+        profile_buttons.addWidget(load_profile_button)
+        profile_buttons.addWidget(delete_profile_button)
 
         left = QWidget()
         left.setObjectName("Sidebar")
@@ -701,6 +726,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(QLabel("扫描目录"))
         left_layout.addWidget(self.folder_list)
         left_layout.addLayout(folder_buttons)
+        self.profile_summary_label.setWordWrap(True)
+        self.profile_summary_label.setText("保存常用扫描目录、保护目录、保留规则和整理目标。")
+        left_layout.addWidget(QLabel("整理方案"))
+        left_layout.addWidget(self.profile_combo)
+        left_layout.addLayout(profile_buttons)
+        left_layout.addWidget(self.profile_summary_label)
         left_layout.addWidget(dest_button)
         left_layout.addWidget(self.destination_label)
         left_layout.addWidget(QLabel("图片相似阈值"))
@@ -1250,6 +1281,163 @@ class MainWindow(QMainWindow):
         field.setText(folder)
         self._save_settings()
 
+    def _load_profiles(self) -> None:
+        self.organize_profiles = decode_profiles(self.database.get_setting(PROFILE_SETTINGS_KEY, ""))
+        self._refresh_profile_combo()
+
+    def _save_profiles(self, select_name: str | None = None) -> None:
+        self.database.set_setting(PROFILE_SETTINGS_KEY, encode_profiles(self.organize_profiles))
+        self._refresh_profile_combo(select_name=select_name)
+
+    def _refresh_profile_combo(self, select_name: str | None = None) -> None:
+        current_name = select_name or self._selected_profile_name()
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItem("未选择方案", None)
+        for profile in self.organize_profiles:
+            self.profile_combo.addItem(profile.name, profile.name)
+            self.profile_combo.setItemData(self.profile_combo.count() - 1, profile_summary(profile), Qt.ItemDataRole.ToolTipRole)
+        if current_name:
+            for index in range(self.profile_combo.count()):
+                if self.profile_combo.itemData(index) == current_name:
+                    self.profile_combo.setCurrentIndex(index)
+                    break
+        self.profile_combo.blockSignals(False)
+        self.on_profile_selection_changed()
+
+    def _selected_profile_name(self) -> str | None:
+        value = self.profile_combo.currentData()
+        return str(value) if value else None
+
+    def _selected_profile(self) -> OrganizeProfile | None:
+        name = self._selected_profile_name()
+        if not name:
+            return None
+        for profile in self.organize_profiles:
+            if profile.name == name:
+                return profile
+        return None
+
+    def on_profile_selection_changed(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            self.profile_summary_label.setText("保存常用扫描目录、保护目录、保留规则和整理目标。")
+            return
+        self.profile_summary_label.setText(profile_summary(profile))
+
+    def _capture_current_profile(self, name: str) -> OrganizeProfile:
+        targets = self.current_organize_targets()
+        return OrganizeProfile(
+            name=name,
+            scan_roots=tuple(self._folder_paths()),
+            protected_roots=tuple(sorted((normalize_path(path) for path in self.protected_roots), key=str)),
+            duplicate_destination=self.destination,
+            keep_strategy=self.strategy_combo.currentText(),
+            bulk_keep_rule=self.bulk_keep_rule_combo.currentText(),
+            bulk_keep_keyword=self.bulk_keep_keyword_input.text().strip(),
+            processing_action=self.action_combo.currentText(),
+            similarity_threshold=self.threshold_spin.value(),
+            same_ratio_only=self.same_ratio_checkbox.isChecked(),
+            same_resolution_only=self.same_resolution_checkbox.isChecked(),
+            rotate_hint=self.rotate_hint_checkbox.isChecked(),
+            organize_rule=self.organize_rule_combo.currentText(),
+            organize_keep_only=self.organize_keep_only_checkbox.isChecked(),
+            photo_target=targets.photo_root,
+            video_target=targets.video_root,
+            document_target=targets.document_root,
+            other_target=targets.other_root,
+        )
+
+    def save_current_profile(self) -> None:
+        current = self._selected_profile()
+        default_name = current.name if current else "照片库整理"
+        name_text, ok = QInputDialog.getText(self, "保存整理方案", "方案名称", QLineEdit.EchoMode.Normal, default_name)
+        if not ok:
+            return
+        try:
+            name = clean_profile_name(name_text)
+        except ValueError as exc:
+            QMessageBox.information(self, "方案名称无效", str(exc))
+            return
+
+        profile = self._capture_current_profile(name)
+        self.organize_profiles = upsert_profile(self.organize_profiles, profile)
+        self._save_profiles(select_name=name)
+        self.status_label.setText(f"已保存整理方案：{name}")
+
+    def load_selected_profile(self) -> None:
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "扫描中", "请先停止或等待当前扫描完成，再加载整理方案。")
+            return
+        profile = self._selected_profile()
+        if profile is None:
+            QMessageBox.information(self, "没有选中方案", "请先选择一个整理方案。")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "加载整理方案",
+            f"将加载“{profile.name}”，并替换当前扫描目录、保护目录、保留规则和整理目标。\n"
+            "此操作不会移动、回收或删除任何文件。是否继续？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.apply_profile(profile)
+        self.status_label.setText(f"已加载整理方案：{profile.name}")
+
+    def delete_selected_profile(self) -> None:
+        profile = self._selected_profile()
+        if profile is None:
+            QMessageBox.information(self, "没有选中方案", "请先选择一个要删除的整理方案。")
+            return
+        answer = QMessageBox.question(self, "删除整理方案", f"确认删除整理方案“{profile.name}”？")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.organize_profiles = remove_profile(self.organize_profiles, profile.name)
+        self._save_profiles()
+        self.status_label.setText(f"已删除整理方案：{profile.name}")
+
+    def apply_profile(self, profile: OrganizeProfile) -> None:
+        self.folder_list.clear()
+        self.protected_roots = {normalize_path(path) for path in profile.protected_roots}
+        for root in profile.scan_roots:
+            self._add_folder_item(root, protected=normalize_path(root) in self.protected_roots)
+
+        self.destination = self._profile_path_or_default(profile.duplicate_destination, self._default_destination())
+        self._set_combo_text(self.strategy_combo, profile.keep_strategy)
+        self._set_combo_text(self.bulk_keep_rule_combo, profile.bulk_keep_rule)
+        self._set_combo_text(self.action_combo, profile.processing_action)
+        self._set_combo_text(self.organize_rule_combo, profile.organize_rule)
+        self.bulk_keep_keyword_input.setText(profile.bulk_keep_keyword)
+        self.threshold_spin.setValue(profile.similarity_threshold)
+        self.same_ratio_checkbox.setChecked(profile.same_ratio_only)
+        self.same_resolution_checkbox.setChecked(profile.same_resolution_only)
+        self.rotate_hint_checkbox.setChecked(profile.rotate_hint)
+        self.organize_keep_only_checkbox.setChecked(profile.organize_keep_only)
+        self.organize_photo_input.setText(str(self._profile_path_or_default(profile.photo_target, self.destination / "Photos")))
+        self.organize_video_input.setText(str(self._profile_path_or_default(profile.video_target, self.destination / "Videos")))
+        self.organize_document_input.setText(str(self._profile_path_or_default(profile.document_target, self.destination / "Documents")))
+        self.organize_other_input.setText(str(self._profile_path_or_default(profile.other_target, self.destination / "Others")))
+        self.organize_targets = self.current_organize_targets()
+        self.organize_preview_items = []
+        self.organize_preview_table.setRowCount(0)
+        self._refresh_folder_item_labels()
+        self._update_destination_label()
+        self._save_settings()
+        self.refresh_group_list()
+        self.rebuild_directory_browser()
+
+    def _profile_path_or_default(self, path: Path, default: Path) -> Path:
+        return default if str(path).strip() in {"", "."} else path
+
+    def _set_combo_text(self, combo: QComboBox, value: str) -> None:
+        if not value:
+            return
+        index = combo.findText(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
     def _load_settings(self) -> None:
         threshold = self.database.get_setting("similarity_threshold", "")
         if threshold.isdigit():
@@ -1280,6 +1468,7 @@ class MainWindow(QMainWindow):
         self.organize_video_input.setText(str(self.organize_targets.video_root))
         self.organize_document_input.setText(str(self.organize_targets.document_root))
         self.organize_other_input.setText(str(self.organize_targets.other_root))
+        self._load_profiles()
 
     def _save_settings(self) -> None:
         self.database.set_setting("destination", str(self.destination))
