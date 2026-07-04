@@ -24,6 +24,7 @@ from photo_dedupe.core.exporter import (
 )
 from photo_dedupe.core.file_details import inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
+from photo_dedupe.core.group_summary import summarize_duplicate_group
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
@@ -1001,6 +1002,25 @@ class DuplicateScannerTests(unittest.TestCase):
 
         self.assertEqual(reasons[safe.path], "建议保留：保护目录内文件")
         self.assertEqual(reasons[duplicate.path], "未选保留：可处理")
+
+    def test_duplicate_group_summary_includes_space_locations_and_recommendation(self) -> None:
+        protected = Path("D:/library")
+        safe = FileRecord(path=protected / "photo.jpg", size=10, modified_at=1.0, width=100, height=100)
+        copy = FileRecord(path=Path("E:/backup/photo-copy.jpg"), size=100, modified_at=2.0, width=200, height=200)
+        group = DuplicateGroup(kind="exact", title="photo", records=[safe, copy])
+
+        summary = summarize_duplicate_group(group, {protected}, "保留最大文件")
+
+        self.assertEqual(summary.kind_label, "完全重复")
+        self.assertEqual(summary.category_label, "照片")
+        self.assertEqual(summary.file_count, 2)
+        self.assertEqual(summary.total_bytes, 110)
+        self.assertEqual(summary.reclaimable_bytes, 10)
+        self.assertEqual(summary.directory_count, 2)
+        self.assertEqual(summary.disk_count, 2)
+        self.assertEqual(summary.protected_count, 1)
+        self.assertEqual(summary.recommended_names, ["photo.jpg"])
+        self.assertEqual(summary.recommended_reason, "保护目录内文件")
 
     def test_processing_plan_skips_protected_unchecked_files(self) -> None:
         root = Path("D:/demo")

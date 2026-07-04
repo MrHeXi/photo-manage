@@ -53,6 +53,7 @@ from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
+from photo_dedupe.core.group_summary import DuplicateGroupSummary, summarize_duplicate_group
 from photo_dedupe.core.hashers import is_image, is_video
 from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
 from photo_dedupe.core.organizer import (
@@ -345,6 +346,7 @@ class MainWindow(QMainWindow):
         self.session_summary_label = QLabel("")
         self.health_summary_label = QLabel("")
         self.organize_help_label = QLabel("")
+        self.group_detail_summary_label = QLabel("")
         self.retention_hint_label = QLabel("勾选的文件会保留在原位置；保护目录内文件不会被批量移动或回收。")
         self.bulk_rule_hint_label = QLabel("")
         self.scan_button = QPushButton("开始扫描")
@@ -805,6 +807,8 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(14, 14, 14, 14)
         right_layout.setSpacing(10)
+        self.group_detail_summary_label.setWordWrap(True)
+        right_layout.addWidget(self.group_detail_summary_label)
         right_layout.addWidget(self.file_table)
         right_layout.addWidget(self.thumbnail_list)
         right_layout.addWidget(self.retention_hint_label)
@@ -1328,6 +1332,7 @@ class MainWindow(QMainWindow):
             self.thumbnail_list.clear()
             self.preview_label.setText("选择图片以预览")
             self.detail_label.setText("当前没有可预览的文件。")
+            self.group_detail_summary_label.setText("选择一个重复分组后，这里会显示占用空间、预估可省、涉及磁盘/目录和推荐保留原因。")
             self.group_status_label.setText(f"当前筛选下没有匹配的重复分组。\n可清空筛选，或添加目录后重新扫描。")
             return
 
@@ -1755,6 +1760,26 @@ class MainWindow(QMainWindow):
             "是否继续执行整理？"
         )
 
+    def _duplicate_group_summary_text(self, summary: DuplicateGroupSummary) -> str:
+        recommended = "、".join(summary.recommended_names[:3]) or "-"
+        if len(summary.recommended_names) > 3:
+            recommended += f" 等 {len(summary.recommended_names)} 个"
+        disks = "、".join(summary.disks[:4]) or "-"
+        if len(summary.disks) > 4:
+            disks += f" 等 {len(summary.disks)} 个"
+        directories = "、".join(str(path) for path in summary.directories[:3]) or "-"
+        if len(summary.directories) > 3:
+            directories += f" 等 {len(summary.directories)} 个目录"
+        protected_text = f" | 保护目录文件 {summary.protected_count} 个" if summary.protected_count else ""
+        return (
+            f"{summary.kind_label} · {summary.category_label} | "
+            f"{summary.file_count} 个文件 | 占用 {format_size(summary.total_bytes)} | "
+            f"预估可省 {format_size(summary.reclaimable_bytes)} | "
+            f"涉及磁盘 {summary.disk_count} 个：{disks} | "
+            f"涉及目录 {summary.directory_count} 个：{directories}{protected_text}\n"
+            f"推荐保留：{recommended}（{summary.recommended_reason}）"
+        )
+
     def _group_key(self, group: DuplicateGroup) -> str:
         return f"{group.kind}|{group.title}|{'|'.join(str(record.path) for record in group.records)}"
 
@@ -1892,6 +1917,7 @@ class MainWindow(QMainWindow):
         self.refresh_group_list()
         self.file_table.setRowCount(0)
         self.thumbnail_list.clear()
+        self.group_detail_summary_label.setText("")
         self.directory_detail_table.setRowCount(0)
         self.preview_label.setPixmap(QPixmap())
         self.preview_label.setText("选择图片以预览")
@@ -1949,6 +1975,7 @@ class MainWindow(QMainWindow):
         self.directory_tree.clear()
         self.directory_detail_table.setRowCount(0)
         self.file_table.setRowCount(0)
+        self.group_detail_summary_label.setText("扫描完成后，这里会显示当前重复分组的空间、目录和推荐保留摘要。")
         self.preview_label.setText("扫描中")
         self.detail_label.clear()
         self.progress.setValue(0)
@@ -2031,9 +2058,11 @@ class MainWindow(QMainWindow):
         self.file_table.setRowCount(0)
         self.thumbnail_list.clear()
         if not current:
+            self.group_detail_summary_label.setText("")
             return
         group = current.data(Qt.ItemDataRole.UserRole)
         if not isinstance(group, DuplicateGroup):
+            self.group_detail_summary_label.setText("")
             return
 
         group_key = self._group_key(group)
@@ -2041,6 +2070,8 @@ class MainWindow(QMainWindow):
         keep_result = choose_keep_records(group.records, self.strategy_combo.currentText(), self.protected_roots)
         keep_paths = {record.path for record in keep_result.keep_records}
         keep_reasons = describe_keep_reasons(group.records, self.strategy_combo.currentText(), self.protected_roots)
+        summary = summarize_duplicate_group(group, self.protected_roots, self.strategy_combo.currentText())
+        self.group_detail_summary_label.setText(self._duplicate_group_summary_text(summary))
         self.file_table.setRowCount(len(group.records))
         self.updating_keep_checks = True
         for row, record in enumerate(group.records):
@@ -2421,6 +2452,7 @@ class MainWindow(QMainWindow):
         self.directory_tree.clear()
         self.directory_detail_table.setRowCount(0)
         self.file_table.setRowCount(0)
+        self.group_detail_summary_label.setText("正在加载历史扫描任务...")
         self.thumbnail_list.clear()
         self.preview_label.setPixmap(QPixmap())
         self.preview_label.setText("选择图片以预览")
@@ -2459,6 +2491,7 @@ class MainWindow(QMainWindow):
             self.directory_detail_table.setRowCount(0)
             self.file_table.setRowCount(0)
             self.thumbnail_list.clear()
+            self.group_detail_summary_label.setText("")
             self.group_status_label.setText(f"已删除当前扫描任务，当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
             self.load_more_groups_button.setEnabled(False)
             self.load_more_groups_button.setText("继续加载更多")
@@ -2485,6 +2518,7 @@ class MainWindow(QMainWindow):
         self.session_summary_label.setText("这里会显示历史扫描任务。")
         self.file_table.setRowCount(0)
         self.thumbnail_list.clear()
+        self.group_detail_summary_label.setText("")
         self.refresh_history()
         self.status_label.setText("扫描历史已清空")
 
