@@ -31,6 +31,7 @@ from photo_dedupe.core.image_compare import build_image_compare_items
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
+    OrganizePreviewSummary,
     OrganizeTargetConfig,
     build_organize_preview,
     category_label,
@@ -40,6 +41,11 @@ from photo_dedupe.core.organizer import (
     organize_files,
     organize_images_by_date,
     summarize_organize_preview,
+)
+from photo_dedupe.core.operation_report import (
+    build_organize_result_report,
+    build_processing_result_report,
+    format_operation_result_report,
 )
 from photo_dedupe.core.organize_profiles import (
     OrganizeProfile,
@@ -1435,6 +1441,74 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(summary.risk_level, RISK_HIGH)
         self.assertIsNone(summary.destination)
         self.assertIn("系统回收站", text)
+
+    def test_processing_result_report_summarizes_completed_and_skipped_files(self) -> None:
+        root = Path("D:/demo")
+        protected = root / "library"
+        safe = FileRecord(path=protected / "photo.jpg", size=10, modified_at=1.0, keep_selected=False)
+        keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+        moved = FileRecord(path=root / "temp" / "photo-copy.jpg", size=30, modified_at=3.0, keep_selected=False)
+        skipped = FileRecord(path=root / "temp" / "missing.jpg", size=40, modified_at=4.0, keep_selected=False)
+        group = DuplicateGroup(kind="exact", title="group", records=[safe, keep, moved, skipped])
+        plan = build_processing_plan([group], {protected})
+
+        report = build_processing_result_report(
+            plan,
+            "移动到目标目录",
+            {moved.path},
+            [Path("E:/duplicates/photo-copy.jpg")],
+        )
+        text = format_operation_result_report(report)
+
+        self.assertEqual(report.planned_count, 2)
+        self.assertEqual(report.completed_count, 1)
+        self.assertEqual(report.skipped_count, 1)
+        self.assertEqual(report.protected_skip_count, 1)
+        self.assertEqual(report.completed_bytes, 30)
+        self.assertIn("操作记录", text)
+        self.assertIn("E:\\duplicates", text)
+
+    def test_processing_result_report_uses_recycle_bin_restore_hint(self) -> None:
+        root = Path("D:/demo")
+        keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+        trashed = FileRecord(path=root / "temp" / "photo-copy.jpg", size=30, modified_at=3.0, keep_selected=False)
+        group = DuplicateGroup(kind="exact", title="group", records=[keep, trashed])
+        plan = build_processing_plan([group], set())
+
+        report = build_processing_result_report(plan, "移动到回收站", {trashed.path})
+        text = format_operation_result_report(report)
+
+        self.assertEqual(report.completed_count, 1)
+        self.assertIn("Windows 回收站", report.restore_hint)
+        self.assertIn("Windows 回收站", text)
+
+    def test_organize_result_report_summarizes_move_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source" / "photo.jpg"
+            target = root / "photos" / "photo.jpg"
+            target.parent.mkdir()
+            target.write_bytes(b"photo")
+            preview = [OrganizePreviewItem(source, "photo", "图片格式", target)]
+            summary = OrganizePreviewSummary(
+                file_count=2,
+                total_bytes=15,
+                category_counts={"photo": 2},
+                source_directories=[source.parent],
+                target_directories=[target.parent],
+                missing_count=1,
+                already_in_target_count=0,
+            )
+
+            report = build_organize_result_report(preview, [(source, target)], summary)
+            text = format_operation_result_report(report)
+
+        self.assertEqual(report.planned_count, 2)
+        self.assertEqual(report.completed_count, 1)
+        self.assertEqual(report.skipped_count, 1)
+        self.assertEqual(report.completed_bytes, 5)
+        self.assertIn("整理执行报告", text)
+        self.assertIn("操作记录", text)
 
     def test_trash_operation_is_logged_and_exported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

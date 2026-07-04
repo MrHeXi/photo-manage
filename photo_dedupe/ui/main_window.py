@@ -85,6 +85,11 @@ from photo_dedupe.core.organize_profiles import (
     upsert_profile,
 )
 from photo_dedupe.core.onboarding import OnboardingSnapshot, build_onboarding_steps, onboarding_summary
+from photo_dedupe.core.operation_report import (
+    build_organize_result_report,
+    build_processing_result_report,
+    format_operation_result_report,
+)
 from photo_dedupe.core.progress_status import (
     format_progress_message,
     format_restore_status,
@@ -2235,6 +2240,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "整理失败", str(exc))
             return
 
+        report = build_organize_result_report(self.organize_preview_items, moved, summary)
         moved_sources = {source for source, _target in moved}
         if moved_sources:
             self._remove_moved_sources_from_groups(moved_sources)
@@ -2242,12 +2248,12 @@ class MainWindow(QMainWindow):
         self.organize_preview_items = []
         self.organize_preview_table.setRowCount(0)
         self.organize_summary_label.setText(f"整理完成，共移动 {len(moved)} 个文件。")
-        self.status_label.setText(f"整理完成：{len(moved)} 个文件")
+        self.status_label.setText(f"整理完成：{report.completed_count}/{report.planned_count} 个文件")
         self.refresh_onboarding()
         self.refresh_operations()
         if self.history_loaded:
             self.refresh_history()
-        QMessageBox.information(self, "整理完成", f"已移动 {len(moved)} 个文件。")
+        QMessageBox.information(self, "整理完成", format_operation_result_report(report))
 
     def _remove_moved_sources_from_groups(self, moved_sources: set[Path]) -> None:
         updated_groups: list[DuplicateGroup] = []
@@ -2748,9 +2754,10 @@ class MainWindow(QMainWindow):
             )
             return
 
+        action_label = self.action_combo.currentText()
         risk_summary = build_processing_risk_summary(
             plan,
-            self.action_combo.currentText(),
+            action_label,
             self.destination,
         )
         reply = QMessageBox.question(
@@ -2762,7 +2769,8 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if self.action_combo.currentText() == "移动到回收站":
+            moved_targets: list[Path] = []
+            if action_label == "移动到回收站":
                 moved_paths = trash_records(selected_to_move, self.database)
                 moved_count = len(moved_paths)
                 moved_sources = set(moved_paths)
@@ -2770,11 +2778,14 @@ class MainWindow(QMainWindow):
                 moved = move_records(selected_to_move, self.destination, "当前筛选结果", self.database)
                 moved_count = len(moved)
                 moved_sources = {source for source, _target in moved}
+                moved_targets = [target for _source, target in moved]
         except Exception as exc:
             QMessageBox.critical(self, "处理失败", str(exc))
             return
 
-        QMessageBox.information(self, "处理完成", f"已处理 {moved_count} 个文件。")
+        report = build_processing_result_report(plan, action_label, moved_sources, moved_targets)
+        self.status_label.setText(f"处理完成：{moved_count}/{report.planned_count} 个文件")
+        QMessageBox.information(self, "处理完成", format_operation_result_report(report))
         self.refresh_operations()
         self._remove_moved_sources_from_groups(moved_sources)
 
