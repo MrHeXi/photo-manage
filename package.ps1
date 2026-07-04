@@ -11,6 +11,8 @@ $version = (& $python -c "import photo_dedupe; print(photo_dedupe.__version__)")
 $releaseDir = Join-Path "release" "PhotoManageGPT-v$version-win64"
 $zipPath = "$releaseDir.zip"
 
+& $python -m photo_dedupe --release-check
+
 if (Test-Path $releaseDir) {
     Remove-Item -LiteralPath $releaseDir -Recurse -Force
 }

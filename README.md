@@ -172,6 +172,14 @@ py -3.10 -m venv .venv
 
 如果打包时报 `PermissionError`，通常是旧的 `PhotoManageGPT.exe` 还在运行。请先关闭软件，必要时在任务管理器中结束 `PhotoManageGPT.exe` 后再打包。
 
+运行发布自检：
+
+```powershell
+.\.venv\Scripts\python.exe -m photo_dedupe --release-check
+```
+
+发布自检会检查版本号、图标、PyInstaller 配置、README、安全模式启动器、EXE 产物和发布脚本。`发布 zip` 未生成时只会提醒；真正发布前运行 `.\package.ps1` 即可生成 zip。
+
 生成便携发布包：
 
 ```powershell

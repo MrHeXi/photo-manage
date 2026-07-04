@@ -71,6 +71,7 @@ from photo_dedupe.core.processing_risk import (
     build_processing_risk_summary,
     format_processing_confirmation,
 )
+from photo_dedupe.core.release_check import STATUS_ERROR, STATUS_WARN, format_release_check_report, run_release_check
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records, describe_keep_reasons
 from photo_dedupe.core.safety import SEVERITY_ERROR, SEVERITY_WARNING, validate_scan_roots
@@ -179,6 +180,68 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("Compress-Archive", content)
         self.assertIn("photo_dedupe.__version__", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
+        self.assertIn("--release-check", content)
+
+    def test_build_script_runs_release_check(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "build.ps1"
+
+        self.assertIn("--release-check", script.read_text(encoding="utf-8"))
+
+    def test_pyinstaller_spec_includes_icon_and_assets(self) -> None:
+        spec = Path(__file__).resolve().parents[1] / "PhotoManageGPT.spec"
+        content = spec.read_text(encoding="utf-8")
+        normalized = content.replace("\\\\", "/").replace("\\", "/")
+
+        self.assertIn("app_icon.ico", content)
+        self.assertIn("photo_dedupe/assets", normalized)
+
+    def test_release_check_passes_minimal_release_tree_with_zip_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._create_release_tree(Path(directory))
+
+            report = run_release_check(root)
+            text = format_release_check_report(report)
+
+        self.assertTrue(report.passed, text)
+        self.assertTrue(any(item.name == "发布 zip" and item.status == STATUS_WARN for item in report.items))
+        self.assertIn("结论：通过", text)
+
+    def test_release_check_fails_without_exe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._create_release_tree(Path(directory))
+            (root / "dist" / "PhotoManageGPT" / "PhotoManageGPT.exe").unlink()
+
+            report = run_release_check(root)
+
+        self.assertFalse(report.passed)
+        self.assertTrue(any(item.name == "EXE 产物" and item.status == STATUS_ERROR for item in report.items))
+
+    def _create_release_tree(self, root: Path) -> Path:
+        (root / "photo_dedupe" / "assets").mkdir(parents=True)
+        (root / "photo_dedupe" / "ui").mkdir(parents=True)
+        (root / "dist" / "PhotoManageGPT").mkdir(parents=True)
+        (root / "README.md").write_text(
+            "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n",
+            encoding="utf-8",
+        )
+        (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
+        (root / "package.ps1").write_text(
+            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCompress-Archive\n--release-check\n",
+            encoding="utf-8",
+        )
+        (root / "run-safe.ps1").write_text("--safe-mode\n", encoding="utf-8")
+        (root / "PhotoManageGPT.spec").write_text(
+            "datas=[('photo_dedupe\\\\assets','photo_dedupe\\\\assets')]\nconsole=False\nicon='photo_dedupe\\\\assets\\\\app_icon.ico'\n",
+            encoding="utf-8",
+        )
+        (root / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
+        (root / "photo_dedupe" / "__init__.py").write_text('__version__ = "0.1.0"\n', encoding="utf-8")
+        (root / "photo_dedupe" / "__main__.py").write_text("", encoding="utf-8")
+        (root / "photo_dedupe" / "ui" / "main_window.py").write_text("", encoding="utf-8")
+        (root / "photo_dedupe" / "assets" / "app_icon.ico").write_bytes(b"icon")
+        (root / "photo_dedupe" / "assets" / "app_icon.png").write_bytes(b"png")
+        (root / "dist" / "PhotoManageGPT" / "PhotoManageGPT.exe").write_bytes(b"exe")
+        return root
 
 
 class DiagnosticsTests(unittest.TestCase):
