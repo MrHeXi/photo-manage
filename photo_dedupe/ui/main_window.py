@@ -71,6 +71,7 @@ from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import (
     build_processing_plan,
     choose_keep_records,
+    describe_keep_reasons,
     is_under_any,
     normalize_path,
 )
@@ -308,7 +309,7 @@ class MainWindow(QMainWindow):
         self.directory_detail_table = QTableWidget(0, 4)
         self.directory_hint_label = QLabel("")
         self.thumbnail_list = QListWidget()
-        self.file_table = QTableWidget(0, 8)
+        self.file_table = QTableWidget(0, 9)
         self.operations_table = QTableWidget(0, 6)
         self.session_table = QTableWidget(0, 7)
         self.history_table = QTableWidget(0, 7)
@@ -774,9 +775,10 @@ class MainWindow(QMainWindow):
         groups_layout.addWidget(self.load_more_groups_button)
         groups_layout.addWidget(self.group_stack)
 
-        self.file_table.setHorizontalHeaderLabels(["保留", "保护", "文件名", "大小", "修改时间", "尺寸", "相似度", "路径"])
+        self.file_table.setHorizontalHeaderLabels(["保留", "保护", "文件名", "大小", "修改时间", "尺寸", "相似度", "建议", "路径"])
         self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.file_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        self.file_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
+        self.file_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
         self.file_table.setAlternatingRowColors(True)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.file_table.verticalHeader().setDefaultSectionSize(30)
@@ -2038,6 +2040,7 @@ class MainWindow(QMainWindow):
         manual_selection = group_key in self.manual_keep_group_keys
         keep_result = choose_keep_records(group.records, self.strategy_combo.currentText(), self.protected_roots)
         keep_paths = {record.path for record in keep_result.keep_records}
+        keep_reasons = describe_keep_reasons(group.records, self.strategy_combo.currentText(), self.protected_roots)
         self.file_table.setRowCount(len(group.records))
         self.updating_keep_checks = True
         for row, record in enumerate(group.records):
@@ -2060,7 +2063,17 @@ class MainWindow(QMainWindow):
             dimensions = f"{record.width}x{record.height}" if record.width and record.height else "-"
             self.file_table.setItem(row, 5, QTableWidgetItem(dimensions))
             self.file_table.setItem(row, 6, QTableWidgetItem(f"{group.score:.0%}" if group.kind == "similar" else "100%"))
-            self.file_table.setItem(row, 7, QTableWidgetItem(str(record.path)))
+            if manual_selection:
+                reason = "手动保留" if checked else "手动未保留：可处理"
+                if not checked and is_under_any(record.path, self.protected_roots):
+                    reason = "保护目录：批量处理会跳过"
+            else:
+                reason = keep_reasons.get(record.path, "")
+            reason_item = QTableWidgetItem(reason)
+            if reason.startswith("建议保留") or reason.startswith("保护目录"):
+                reason_item.setForeground(QColor("#1a7f37"))
+            self.file_table.setItem(row, 7, reason_item)
+            self.file_table.setItem(row, 8, QTableWidgetItem(str(record.path)))
             self._add_thumbnail(record, row)
         self.updating_keep_checks = False
         self.file_table.resizeRowsToContents()

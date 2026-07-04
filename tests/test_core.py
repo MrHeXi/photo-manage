@@ -38,7 +38,7 @@ from photo_dedupe.core.organizer import (
     summarize_organize_preview,
 )
 from photo_dedupe.core.scanner import DuplicateScanner
-from photo_dedupe.core.selection import build_processing_plan, choose_keep_records
+from photo_dedupe.core.selection import build_processing_plan, choose_keep_records, describe_keep_reasons
 from photo_dedupe.core.safety import SEVERITY_ERROR, SEVERITY_WARNING, validate_scan_roots
 from photo_dedupe.core.single_instance import default_lock_path
 from photo_dedupe.core.storage import AppDatabase
@@ -982,6 +982,25 @@ class DuplicateScannerTests(unittest.TestCase):
         result = choose_keep_records([clean, cache], "保留路径不含关键词", keyword="cache")
 
         self.assertEqual([record.path for record in result.keep_records], [clean.path])
+
+    def test_describe_keep_reasons_marks_suggested_and_processable_files(self) -> None:
+        small = FileRecord(path=Path("D:/album/photo-small.jpg"), size=10, modified_at=1.0)
+        large = FileRecord(path=Path("D:/album/photo-large.jpg"), size=100, modified_at=2.0)
+
+        reasons = describe_keep_reasons([small, large], "保留最大文件")
+
+        self.assertEqual(reasons[large.path], "建议保留：文件最大")
+        self.assertEqual(reasons[small.path], "未选保留：可处理")
+
+    def test_describe_keep_reasons_marks_protected_files(self) -> None:
+        protected = Path("D:/library")
+        safe = FileRecord(path=protected / "photo.jpg", size=10, modified_at=1.0)
+        duplicate = FileRecord(path=Path("D:/temp/photo.jpg"), size=100, modified_at=2.0)
+
+        reasons = describe_keep_reasons([safe, duplicate], "保留最大文件", {protected})
+
+        self.assertEqual(reasons[safe.path], "建议保留：保护目录内文件")
+        self.assertEqual(reasons[duplicate.path], "未选保留：可处理")
 
     def test_processing_plan_skips_protected_unchecked_files(self) -> None:
         root = Path("D:/demo")

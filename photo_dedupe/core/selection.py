@@ -150,6 +150,27 @@ def choose_keep_records(
     )
 
 
+def describe_keep_reasons(
+    records: list[FileRecord],
+    rule_label: str,
+    protected_roots: set[Path] | None = None,
+    keyword: str = "",
+) -> dict[Path, str]:
+    protected_roots = protected_roots or set()
+    result = choose_keep_records(records, rule_label, protected_roots, keyword=keyword)
+    keep_paths = {record.path for record in result.keep_records}
+    reasons: dict[Path, str] = {}
+
+    for record in records:
+        if record.path in keep_paths:
+            reasons[record.path] = f"建议保留：{result.reason}"
+        elif is_under_any(record.path, protected_roots):
+            reasons[record.path] = "保护目录：批量处理会跳过"
+        else:
+            reasons[record.path] = "未选保留：可处理"
+    return reasons
+
+
 def build_processing_plan(groups: list[DuplicateGroup], protected_roots: set[Path]) -> ProcessingPlan:
     records_to_process: list[FileRecord] = []
     keep_count = 0
