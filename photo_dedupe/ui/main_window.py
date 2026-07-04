@@ -56,12 +56,14 @@ from photo_dedupe.core.hashers import is_image, is_video
 from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
 from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
+    OrganizePreviewSummary,
     OrganizeTargetConfig,
     build_organize_preview,
     category_label,
     classify_group_category,
     execute_organize_preview,
     organize_files,
+    summarize_organize_preview,
 )
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import (
@@ -1625,9 +1627,8 @@ class MainWindow(QMainWindow):
         self.organize_preview_items = preview
         self.organize_preview_table.setRowCount(len(preview))
 
-        counts = {"photo": 0, "video": 0, "document": 0, "other": 0}
+        preview_summary = summarize_organize_preview(preview)
         for row, preview_item in enumerate(preview):
-            counts[preview_item.category] = counts.get(preview_item.category, 0) + 1
             values = [
                 category_label(preview_item.category),
                 preview_item.source.name,
@@ -1639,7 +1640,11 @@ class MainWindow(QMainWindow):
         self.organize_preview_table.resizeRowsToContents()
 
         self.organize_summary_label.setText(
-            f"来自目录树选择的预览：{len(preview)} 个文件 | 照片 {counts['photo']} | 视频 {counts['video']} | 文档 {counts['document']} | 其他 {counts['other']} | 跳过保护目录 {protected_skipped}"
+            f"来自目录树选择的预览：{preview_summary.file_count} 个文件"
+            f" | {self._category_counts_text(preview_summary)}"
+            f" | 总大小 {format_size(preview_summary.total_bytes)}"
+            f" | 目标目录 {len(preview_summary.target_directories)} 个"
+            f" | 跳过保护目录 {protected_skipped}"
         )
         self.main_tabs.setCurrentIndex(0)
         self.status_label.setText("已根据目录树选择生成整理预览")
@@ -1704,6 +1709,43 @@ class MainWindow(QMainWindow):
 
         return True
 
+    def _category_counts_text(self, summary: OrganizePreviewSummary) -> str:
+        counts = summary.category_counts
+        return (
+            f"照片 {counts.get('photo', 0)}"
+            f" | 视频 {counts.get('video', 0)}"
+            f" | 文档 {counts.get('document', 0)}"
+            f" | 其他 {counts.get('other', 0)}"
+        )
+
+    def _limited_path_block(self, paths: list[Path], limit: int = 8) -> str:
+        if not paths:
+            return "-"
+        lines = [str(path) for path in paths[:limit]]
+        if len(paths) > limit:
+            lines.append(f"... 另有 {len(paths) - limit} 个目录")
+        return "\n".join(lines)
+
+    def _organize_execution_message(self, summary: OrganizePreviewSummary) -> str:
+        skip_notes = []
+        if summary.missing_count:
+            skip_notes.append(f"{summary.missing_count} 个源文件当前不存在，会自动跳过")
+        if summary.already_in_target_count:
+            skip_notes.append(f"{summary.already_in_target_count} 个文件已经在目标位置，会自动跳过")
+        skip_text = "；".join(skip_notes) if skip_notes else "无"
+
+        return (
+            f"将按当前整理预览移动 {summary.file_count} 个文件，合计 {format_size(summary.total_bytes)}。\n"
+            f"分类：{self._category_counts_text(summary)}。\n"
+            f"预计目标目录：{len(summary.target_directories)} 个。\n"
+            f"{self._limited_path_block(summary.target_directories)}\n\n"
+            f"涉及来源目录：{len(summary.source_directories)} 个。\n"
+            f"{self._limited_path_block(summary.source_directories)}\n\n"
+            "如果目标目录已有同名文件，会自动改名避免覆盖。\n"
+            f"跳过提醒：{skip_text}。\n\n"
+            "是否继续执行整理？"
+        )
+
     def _group_key(self, group: DuplicateGroup) -> str:
         return f"{group.kind}|{group.title}|{'|'.join(str(record.path) for record in group.records)}"
 
@@ -1748,9 +1790,8 @@ class MainWindow(QMainWindow):
         self.organize_preview_items = preview
         self.organize_preview_table.setRowCount(len(preview))
 
-        counts = {"photo": 0, "video": 0, "document": 0, "other": 0}
+        preview_summary = summarize_organize_preview(preview)
         for row, item in enumerate(preview):
-            counts[item.category] = counts.get(item.category, 0) + 1
             values = [
                 category_label(item.category),
                 item.source.name,
@@ -1761,18 +1802,17 @@ class MainWindow(QMainWindow):
                 self.organize_preview_table.setItem(row, column, QTableWidgetItem(value))
         self.organize_preview_table.resizeRowsToContents()
 
-        summary = (
-            f"预览共 {len(preview)} 个文件"
-            f" | 照片 {counts['photo']}"
-            f" | 视频 {counts['video']}"
-            f" | 文档 {counts['document']}"
-            f" | 其他 {counts['other']}"
+        summary_text = (
+            f"预览共 {preview_summary.file_count} 个文件"
+            f" | {self._category_counts_text(preview_summary)}"
+            f" | 总大小 {format_size(preview_summary.total_bytes)}"
+            f" | 目标目录 {len(preview_summary.target_directories)} 个"
         )
         if self.organize_keep_only_checkbox.isChecked():
-            summary += " | 当前仅包含重复组中的保留项"
+            summary_text += " | 当前仅包含重复组中的保留项"
         if protected_skipped:
-            summary += f" | 已跳过保护目录 {protected_skipped} 个文件"
-        self.organize_summary_label.setText(summary)
+            summary_text += f" | 已跳过保护目录 {protected_skipped} 个文件"
+        self.organize_summary_label.setText(summary_text)
         self.status_label.setText("整理预览已生成")
         self._save_settings()
 
@@ -1782,10 +1822,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "没有整理预览", "请先生成整理预览，再执行整理。")
             return
 
+        summary = summarize_organize_preview(self.organize_preview_items)
         reply = QMessageBox.question(
             self,
             "确认整理",
-            f"将按当前整理预览移动 {len(self.organize_preview_items)} 个文件。是否继续？",
+            self._organize_execution_message(summary),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return

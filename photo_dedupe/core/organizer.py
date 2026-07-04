@@ -76,6 +76,17 @@ class OrganizePreviewItem:
     target: Path
 
 
+@dataclass(slots=True)
+class OrganizePreviewSummary:
+    file_count: int
+    total_bytes: int
+    category_counts: dict[str, int]
+    source_directories: list[Path]
+    target_directories: list[Path]
+    missing_count: int
+    already_in_target_count: int
+
+
 def category_label(category: str) -> str:
     labels = {
         "photo": "照片",
@@ -214,6 +225,40 @@ def build_organize_preview(
     return preview
 
 
+def summarize_organize_preview(preview: list[OrganizePreviewItem]) -> OrganizePreviewSummary:
+    category_counts = {"photo": 0, "video": 0, "document": 0, "other": 0, "mixed": 0}
+    source_directories: set[Path] = set()
+    target_directories: set[Path] = set()
+    total_bytes = 0
+    missing_count = 0
+    already_in_target_count = 0
+
+    for item in preview:
+        category_counts[item.category] = category_counts.get(item.category, 0) + 1
+        source_directories.add(item.source.parent)
+        target_directories.add(item.target.parent)
+
+        try:
+            if not item.source.exists():
+                missing_count += 1
+                continue
+            total_bytes += item.source.stat().st_size
+            if item.source.resolve() == item.target.resolve():
+                already_in_target_count += 1
+        except OSError:
+            missing_count += 1
+
+    return OrganizePreviewSummary(
+        file_count=len(preview),
+        total_bytes=total_bytes,
+        category_counts=category_counts,
+        source_directories=sorted(source_directories, key=lambda item: str(item).lower()),
+        target_directories=sorted(target_directories, key=lambda item: str(item).lower()),
+        missing_count=missing_count,
+        already_in_target_count=already_in_target_count,
+    )
+
+
 def execute_organize_preview(
     preview: list[OrganizePreviewItem],
     database: AppDatabase | None = None,
@@ -223,9 +268,9 @@ def execute_organize_preview(
         if not item.source.exists():
             continue
         item.target.parent.mkdir(parents=True, exist_ok=True)
-        target = unique_target_path(item.target.parent, item.target.name)
-        if item.source.resolve() == target.resolve():
+        if item.source.resolve() == item.target.resolve():
             continue
+        target = unique_target_path(item.target.parent, item.target.name)
         shutil.move(str(item.source), str(target))
         if database is not None:
             database.log_move(item.source, target)

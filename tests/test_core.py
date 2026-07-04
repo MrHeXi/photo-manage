@@ -25,6 +25,7 @@ from photo_dedupe.core.exporter import (
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.organizer import (
+    OrganizePreviewItem,
     OrganizeTargetConfig,
     build_organize_preview,
     category_label,
@@ -32,6 +33,7 @@ from photo_dedupe.core.organizer import (
     organize_by_type,
     organize_files,
     organize_images_by_date,
+    summarize_organize_preview,
 )
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records
@@ -431,6 +433,33 @@ class DuplicateScannerTests(unittest.TestCase):
 
         self.assertEqual([item.source.name for item in preview], ["loose.jpg"])
 
+    def test_summarize_organize_preview_counts_size_and_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            photo = source_dir / "photo.jpg"
+            document = source_dir / "notes.pdf"
+            missing = source_dir / "missing.mp4"
+            photo.write_bytes(b"12345")
+            document.write_bytes(b"abc")
+
+            preview = [
+                OrganizePreviewItem(photo, "photo", "图片格式", root / "photos" / photo.name),
+                OrganizePreviewItem(document, "document", "文档格式", root / "docs" / document.name),
+                OrganizePreviewItem(missing, "video", "视频格式", root / "videos" / missing.name),
+            ]
+
+            summary = summarize_organize_preview(preview)
+
+        self.assertEqual(summary.file_count, 3)
+        self.assertEqual(summary.total_bytes, 8)
+        self.assertEqual(summary.category_counts["photo"], 1)
+        self.assertEqual(summary.category_counts["document"], 1)
+        self.assertEqual(summary.category_counts["video"], 1)
+        self.assertEqual(summary.missing_count, 1)
+        self.assertEqual(len(summary.target_directories), 3)
+
     def test_organize_files_skips_protected_roots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -473,6 +502,23 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(len(moved), 1)
         self.assertFalse(source_exists)
         self.assertTrue(target_exists)
+
+    def test_execute_organize_preview_skips_file_already_at_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target_dir = root / "photos"
+            target_dir.mkdir()
+            source = target_dir / "photo.jpg"
+            source.write_text("x", encoding="utf-8")
+            preview = [OrganizePreviewItem(source, "photo", "图片格式", source)]
+
+            moved = execute_organize_preview(preview)
+            source_exists = source.exists()
+            renamed_exists = (target_dir / "photo (1).jpg").exists()
+
+        self.assertEqual(moved, [])
+        self.assertTrue(source_exists)
+        self.assertFalse(renamed_exists)
 
     def test_build_directory_duplicate_index_groups_by_directory(self) -> None:
         root = Path("D:/library")
