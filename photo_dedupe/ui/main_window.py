@@ -51,6 +51,7 @@ from photo_dedupe.core.diagnostics import (
 )
 from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv
+from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
 from photo_dedupe.core.hashers import is_image, is_video
 from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
@@ -2173,7 +2174,8 @@ class MainWindow(QMainWindow):
         if not isinstance(record, FileRecord):
             return
 
-        self.detail_label.setText(str(record.path))
+        details = inspect_file_preview(record)
+        self.detail_label.setText(self._file_preview_detail_text(record, details))
         if is_image(record.path) and record.path.exists():
             self.media_player.stop()
             self.preview_stack.setCurrentWidget(self.preview_label)
@@ -2556,6 +2558,28 @@ class MainWindow(QMainWindow):
             return None
         record = keep_item.data(Qt.ItemDataRole.UserRole)
         return record if isinstance(record, FileRecord) else None
+
+    def _file_preview_detail_text(self, record: FileRecord, details: FilePreviewDetails) -> str:
+        lines = [
+            f"文件：{record.name}",
+            f"类型：{details.category_label} · {record.suffix or '无扩展名'}",
+            f"大小：{format_size(details.size)}",
+            f"修改时间：{datetime.fromtimestamp(details.modified_at).strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+        if details.width and details.height:
+            megapixels = details.megapixels
+            megapixel_text = f" · {megapixels:.1f} MP" if megapixels is not None else ""
+            lines.append(f"尺寸：{details.width} x {details.height}{megapixel_text}")
+        if details.taken_at is not None:
+            lines.append(f"拍摄时间：{details.taken_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        if details.camera:
+            lines.append(f"相机：{details.camera}")
+        if is_under_any(record.path, self.protected_roots):
+            lines.append("保护目录：是，批量处理会跳过此文件")
+        if not details.exists:
+            lines.append("状态：文件当前不存在，可能已被移动、删除或磁盘未连接")
+        lines.append(f"路径：{record.path}")
+        return "\n".join(lines)
 
     def analyze_selected_image(self) -> None:
         record = self.selected_record()

@@ -22,6 +22,7 @@ from photo_dedupe.core.exporter import (
     export_files_csv,
     export_operations_csv,
 )
+from photo_dedupe.core.file_details import inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.organizer import (
@@ -259,6 +260,43 @@ class DuplicateScannerTests(unittest.TestCase):
         similar_groups = [group for group in groups if group.kind == "similar"]
         self.assertEqual(len(similar_groups), 1)
         self.assertEqual(len(similar_groups[0].records), 2)
+
+    def test_file_preview_details_reads_image_size_and_size(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "photo.png"
+            Image.new("RGB", (40, 20), "green").save(image_path)
+            record = FileRecord(path=image_path, size=0, modified_at=0)
+
+            details = inspect_file_preview(record)
+
+        self.assertTrue(details.exists)
+        self.assertEqual(details.category, "photo")
+        self.assertEqual((details.width, details.height), (40, 20))
+        self.assertGreater(details.size, 0)
+        self.assertAlmostEqual(details.megapixels or 0, 0.0008)
+
+    def test_file_preview_details_uses_cached_values_when_missing(self) -> None:
+        record = FileRecord(
+            path=Path("D:/missing/photo.jpg"),
+            size=123,
+            modified_at=456.0,
+            width=10,
+            height=20,
+        )
+
+        details = inspect_file_preview(record)
+
+        self.assertFalse(details.exists)
+        self.assertEqual(details.category, "photo")
+        self.assertEqual(details.size, 123)
+        self.assertEqual(details.modified_at, 456.0)
+        self.assertEqual((details.width, details.height), (10, 20))
 
     def test_similar_images_can_require_same_resolution(self) -> None:
         try:
