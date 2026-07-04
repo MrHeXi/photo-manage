@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLineEdit,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QStackedWidget,
     QSpinBox,
@@ -56,6 +59,7 @@ from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
 from photo_dedupe.core.file_reveal import reveal_in_file_manager
 from photo_dedupe.core.group_summary import DuplicateGroupSummary, summarize_duplicate_group
 from photo_dedupe.core.hashers import is_image, is_video
+from photo_dedupe.core.image_compare import ImageCompareItem, build_image_compare_items
 from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
 from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
@@ -601,6 +605,8 @@ class MainWindow(QMainWindow):
         move_button.clicked.connect(self.move_unchecked)
         reveal_button = QPushButton("打开所在文件夹")
         reveal_button.clicked.connect(self.reveal_selected_file)
+        compare_images_button = QPushButton("图片对比")
+        compare_images_button.clicked.connect(self.compare_current_group_images)
         self.action_combo.addItems(["移动到目标目录", "移动到回收站"])
         self.bulk_keep_rule_combo.addItems(
             [
@@ -829,6 +835,7 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(bulk_rule_actions)
         right_layout.addWidget(self.bulk_rule_hint_label)
         right_layout.addWidget(self.action_combo)
+        right_layout.addWidget(compare_images_button)
         right_layout.addWidget(reveal_button)
         right_layout.addWidget(move_button)
         right_layout.addWidget(self.preview_stack)
@@ -2130,6 +2137,113 @@ class MainWindow(QMainWindow):
         row = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(row, int):
             self.file_table.selectRow(row)
+
+    def compare_current_group_images(self) -> None:
+        current = self.group_list.currentItem()
+        if current is None:
+            QMessageBox.information(self, "需要分组", "请先选择一个重复分组。")
+            return
+        group = current.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(group, DuplicateGroup):
+            QMessageBox.information(self, "需要分组", "请先选择一个重复分组。")
+            return
+
+        items = build_image_compare_items(group.records, self.protected_roots, self.strategy_combo.currentText())
+        if len(items) < 2:
+            QMessageBox.information(self, "图片不足", "当前分组至少需要两张图片才能并排对比。")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"图片对比 - {group.title}")
+        dialog.resize(1120, 760)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        header = QLabel(
+            f"{len(items)} 张图片 | 推荐保留项会排在前面 | 当前策略：{self.strategy_combo.currentText()}"
+        )
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        grid = QGridLayout(content)
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setSpacing(12)
+        for index, item in enumerate(items):
+            grid.addWidget(self._build_image_compare_card(item), index // 2, index % 2)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        close_row.addWidget(close_button)
+        layout.addLayout(close_row)
+        dialog.exec()
+
+    def _build_image_compare_card(self, item: ImageCompareItem) -> QWidget:
+        card = QWidget()
+        card.setObjectName("ImageCompareCard")
+        card.setStyleSheet(
+            "#ImageCompareCard { background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; }"
+        )
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        image_label = QLabel()
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_label.setMinimumSize(420, 300)
+        image_label.setStyleSheet("background: #f6f8fa; border-radius: 6px;")
+        if item.details.exists and is_image(item.record.path):
+            pixmap = QPixmap(str(item.record.path))
+            if not pixmap.isNull():
+                image_label.setPixmap(
+                    pixmap.scaled(
+                        420,
+                        300,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            else:
+                image_label.setText("图片无法预览")
+        else:
+            image_label.setText("图片不存在")
+        layout.addWidget(image_label)
+
+        details = QLabel(self._image_compare_item_text(item))
+        details.setWordWrap(True)
+        layout.addWidget(details)
+        return card
+
+    def _image_compare_item_text(self, item: ImageCompareItem) -> str:
+        badges = []
+        if item.recommended:
+            badges.append("建议保留")
+        if item.protected:
+            badges.append("保护目录")
+        badge_text = f"[{' | '.join(badges)}] " if badges else ""
+        dimensions = (
+            f"{item.details.width} x {item.details.height}"
+            if item.details.width and item.details.height
+            else "-"
+        )
+        megapixels = f" · {item.details.megapixels:.1f} MP" if item.details.megapixels is not None else ""
+        modified = datetime.fromtimestamp(item.details.modified_at).strftime("%Y-%m-%d %H:%M:%S")
+        reason = item.reason or "未命中推荐规则"
+        return (
+            f"{badge_text}{item.record.name}\n"
+            f"尺寸：{dimensions}{megapixels}\n"
+            f"大小：{format_size(item.details.size)}\n"
+            f"修改时间：{modified}\n"
+            f"原因：{reason}\n"
+            f"路径：{item.record.path}"
+        )
 
     def on_keep_item_changed(self, item: QTableWidgetItem) -> None:
         if self.updating_keep_checks or item.column() != 0:

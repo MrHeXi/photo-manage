@@ -26,6 +26,7 @@ from photo_dedupe.core.file_details import inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
 from photo_dedupe.core.file_reveal import build_reveal_command
 from photo_dedupe.core.group_summary import summarize_duplicate_group
+from photo_dedupe.core.image_compare import build_image_compare_items
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
@@ -320,6 +321,19 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(details.size, 123)
         self.assertEqual(details.modified_at, 456.0)
         self.assertEqual((details.width, details.height), (10, 20))
+
+    def test_image_compare_items_filter_images_and_sort_recommended_first(self) -> None:
+        protected = Path("D:/library")
+        safe = FileRecord(path=protected / "photo.jpg", size=10, modified_at=1.0, width=100, height=100)
+        larger = FileRecord(path=Path("E:/backup/photo.jpg"), size=100, modified_at=2.0, width=300, height=300)
+        note = FileRecord(path=Path("E:/backup/note.txt"), size=1000, modified_at=3.0)
+
+        items = build_image_compare_items([larger, note, safe], {protected}, "保留最大文件")
+
+        self.assertEqual([item.record.path for item in items], [safe.path, larger.path])
+        self.assertTrue(items[0].recommended)
+        self.assertTrue(items[0].protected)
+        self.assertEqual(items[0].reason, "建议保留：保护目录内文件")
 
     def test_similar_images_can_require_same_resolution(self) -> None:
         try:
