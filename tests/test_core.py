@@ -29,6 +29,7 @@ from photo_dedupe.core.organizer import (
     OrganizeTargetConfig,
     build_organize_preview,
     category_label,
+    describe_organize_preview_item,
     execute_organize_preview,
     organize_by_type,
     organize_files,
@@ -459,6 +460,45 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(summary.category_counts["video"], 1)
         self.assertEqual(summary.missing_count, 1)
         self.assertEqual(len(summary.target_directories), 3)
+
+    def test_describe_organize_preview_item_statuses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            target_dir = root / "target"
+            source_dir.mkdir()
+            target_dir.mkdir()
+            ready_source = source_dir / "ready.jpg"
+            conflict_source = source_dir / "conflict.jpg"
+            conflict_target = target_dir / "conflict.jpg"
+            already_target = target_dir / "already.jpg"
+            missing_source = source_dir / "missing.jpg"
+            ready_source.write_text("ready", encoding="utf-8")
+            conflict_source.write_text("source", encoding="utf-8")
+            conflict_target.write_text("target", encoding="utf-8")
+            already_target.write_text("already", encoding="utf-8")
+
+            ready = describe_organize_preview_item(
+                OrganizePreviewItem(ready_source, "photo", "图片格式", target_dir / "ready.jpg")
+            )
+            conflict = describe_organize_preview_item(
+                OrganizePreviewItem(conflict_source, "photo", "图片格式", conflict_target)
+            )
+            already = describe_organize_preview_item(
+                OrganizePreviewItem(already_target, "photo", "图片格式", already_target)
+            )
+            missing = describe_organize_preview_item(
+                OrganizePreviewItem(missing_source, "photo", "图片格式", target_dir / "missing.jpg")
+            )
+
+        self.assertEqual(ready.state, "ready")
+        self.assertTrue(ready.will_move)
+        self.assertEqual(conflict.state, "target_conflict")
+        self.assertTrue(conflict.will_move)
+        self.assertEqual(already.state, "already_in_target")
+        self.assertFalse(already.will_move)
+        self.assertEqual(missing.state, "missing")
+        self.assertFalse(missing.will_move)
 
     def test_organize_files_skips_protected_roots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

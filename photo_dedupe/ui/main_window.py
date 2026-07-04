@@ -61,6 +61,7 @@ from photo_dedupe.core.organizer import (
     build_organize_preview,
     category_label,
     classify_group_category,
+    describe_organize_preview_item,
     execute_organize_preview,
     organize_files,
     summarize_organize_preview,
@@ -964,11 +965,13 @@ class MainWindow(QMainWindow):
         execute_button.clicked.connect(self.execute_organize_plan)
         execute_button.setToolTip("按当前预览列表真正移动文件。")
 
-        self.organize_preview_table.setHorizontalHeaderLabels(["分类", "文件名", "来源路径", "建议目标"])
+        self.organize_preview_table.setHorizontalHeaderLabels(["分类", "状态", "大小", "文件名", "来源路径", "建议目标"])
         self.organize_preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.organize_preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.organize_preview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.organize_preview_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.organize_preview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.organize_preview_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.organize_preview_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.organize_preview_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.organize_preview_table.setAlternatingRowColors(True)
         self.organize_preview_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.organize_preview_table.verticalHeader().setDefaultSectionSize(30)
@@ -1629,8 +1632,11 @@ class MainWindow(QMainWindow):
 
         preview_summary = summarize_organize_preview(preview)
         for row, preview_item in enumerate(preview):
+            status = describe_organize_preview_item(preview_item)
             values = [
                 category_label(preview_item.category),
+                status.label,
+                format_size(status.size),
                 preview_item.source.name,
                 str(preview_item.source),
                 str(preview_item.target),
@@ -1792,8 +1798,11 @@ class MainWindow(QMainWindow):
 
         preview_summary = summarize_organize_preview(preview)
         for row, item in enumerate(preview):
+            status = describe_organize_preview_item(item)
             values = [
                 category_label(item.category),
+                status.label,
+                format_size(status.size),
                 item.source.name,
                 str(item.source),
                 str(item.target),

@@ -87,6 +87,14 @@ class OrganizePreviewSummary:
     already_in_target_count: int
 
 
+@dataclass(slots=True)
+class OrganizePreviewItemStatus:
+    size: int
+    state: str
+    label: str
+    will_move: bool
+
+
 def category_label(category: str) -> str:
     labels = {
         "photo": "照片",
@@ -238,15 +246,12 @@ def summarize_organize_preview(preview: list[OrganizePreviewItem]) -> OrganizePr
         source_directories.add(item.source.parent)
         target_directories.add(item.target.parent)
 
-        try:
-            if not item.source.exists():
-                missing_count += 1
-                continue
-            total_bytes += item.source.stat().st_size
-            if item.source.resolve() == item.target.resolve():
-                already_in_target_count += 1
-        except OSError:
+        status = describe_organize_preview_item(item)
+        total_bytes += status.size
+        if status.state in {"missing", "unreadable"}:
             missing_count += 1
+        if status.state == "already_in_target":
+            already_in_target_count += 1
 
     return OrganizePreviewSummary(
         file_count=len(preview),
@@ -257,6 +262,20 @@ def summarize_organize_preview(preview: list[OrganizePreviewItem]) -> OrganizePr
         missing_count=missing_count,
         already_in_target_count=already_in_target_count,
     )
+
+
+def describe_organize_preview_item(item: OrganizePreviewItem) -> OrganizePreviewItemStatus:
+    try:
+        if not item.source.exists():
+            return OrganizePreviewItemStatus(0, "missing", "源文件不存在", False)
+        size = item.source.stat().st_size
+        if item.source.resolve() == item.target.resolve():
+            return OrganizePreviewItemStatus(size, "already_in_target", "已在目标位置", False)
+        if item.target.exists():
+            return OrganizePreviewItemStatus(size, "target_conflict", "可移动，同名将改名", True)
+        return OrganizePreviewItemStatus(size, "ready", "可移动", True)
+    except OSError:
+        return OrganizePreviewItemStatus(0, "unreadable", "无法读取，执行时跳过", False)
 
 
 def execute_organize_preview(
