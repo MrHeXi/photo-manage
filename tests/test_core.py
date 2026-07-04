@@ -24,6 +24,7 @@ from photo_dedupe.core.exporter import (
 )
 from photo_dedupe.core.file_details import inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
+from photo_dedupe.core.file_reveal import build_reveal_command
 from photo_dedupe.core.group_summary import summarize_duplicate_group
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.organizer import (
@@ -198,6 +199,27 @@ class SingleInstanceTests(unittest.TestCase):
                 self.assertFalse(second_lock.tryLock(100))
             finally:
                 first_lock.unlock()
+
+
+class FileRevealTests(unittest.TestCase):
+    def test_windows_reveal_command_selects_file(self) -> None:
+        command = build_reveal_command(Path("D:/Photos/a.jpg"), platform="win32")
+
+        self.assertEqual(command[0], "explorer.exe")
+        self.assertTrue(command[1].startswith("/select,"))
+        self.assertIn("a.jpg", command[1])
+
+    def test_linux_reveal_command_opens_parent_directory(self) -> None:
+        command = build_reveal_command(Path("D:/Photos/a.jpg"), platform="linux")
+
+        self.assertEqual(command[0], "xdg-open")
+        self.assertTrue(command[1].endswith("Photos"))
+
+    def test_macos_reveal_command_reveals_file(self) -> None:
+        command = build_reveal_command(Path("D:/Photos/a.jpg"), platform="darwin")
+
+        self.assertEqual(command[0:2], ["open", "-R"])
+        self.assertTrue(command[2].endswith("a.jpg"))
 
 
 class MainWindowStartupTests(unittest.TestCase):

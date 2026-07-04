@@ -53,6 +53,7 @@ from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
+from photo_dedupe.core.file_reveal import reveal_in_file_manager
 from photo_dedupe.core.group_summary import DuplicateGroupSummary, summarize_duplicate_group
 from photo_dedupe.core.hashers import is_image, is_video
 from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
@@ -598,6 +599,8 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         move_button = QPushButton("处理当前筛选结果")
         move_button.clicked.connect(self.move_unchecked)
+        reveal_button = QPushButton("打开所在文件夹")
+        reveal_button.clicked.connect(self.reveal_selected_file)
         self.action_combo.addItems(["移动到目标目录", "移动到回收站"])
         self.bulk_keep_rule_combo.addItems(
             [
@@ -826,6 +829,7 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(bulk_rule_actions)
         right_layout.addWidget(self.bulk_rule_hint_label)
         right_layout.addWidget(self.action_combo)
+        right_layout.addWidget(reveal_button)
         right_layout.addWidget(move_button)
         right_layout.addWidget(self.preview_stack)
         right_layout.addWidget(self.detail_label)
@@ -2605,6 +2609,18 @@ class MainWindow(QMainWindow):
             return None
         record = keep_item.data(Qt.ItemDataRole.UserRole)
         return record if isinstance(record, FileRecord) else None
+
+    def reveal_selected_file(self) -> None:
+        record = self.selected_record()
+        if record is None:
+            QMessageBox.information(self, "没有选中文件", "请先在重复处理页选中一个文件。")
+            return
+        try:
+            reveal_in_file_manager(record.path)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开所在文件夹", str(exc))
+            return
+        self.status_label.setText(f"已打开所在文件夹：{record.path.parent}")
 
     def _file_preview_detail_text(self, record: FileRecord, details: FilePreviewDetails) -> str:
         lines = [
