@@ -73,6 +73,11 @@ from photo_dedupe.core.organizer import (
     organize_files,
     summarize_organize_preview,
 )
+from photo_dedupe.core.progress_status import (
+    format_progress_message,
+    format_restore_status,
+    format_scan_start,
+)
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import (
     build_processing_plan,
@@ -506,6 +511,13 @@ class MainWindow(QMainWindow):
         if self.restore_worker and self.restore_worker.isRunning():
             return
         self.load_more_groups_button.setEnabled(False)
+        status = format_restore_status(offset_groups, self.restored_total_groups)
+        self.status_label.setText(status)
+        self.group_status_label.setText(status)
+        self.progress.setMaximum(max(self.restored_total_groups, 1))
+        self.progress.setValue(min(offset_groups, max(self.restored_total_groups, 1)))
+        self.history_state = status
+        self.refresh_health_diagnostics()
         self.restore_worker = RestoreSessionWorker(
             self.database.path,
             session_id=session_id if session_id is not None else self.restored_session_id,
@@ -522,9 +534,11 @@ class MainWindow(QMainWindow):
         if self.restored_loaded_groups >= self.restored_total_groups:
             self.load_more_groups_button.setEnabled(False)
             return
-        self.status_label.setText(
-            f"正在继续加载已保存结果：{self.restored_loaded_groups}/{self.restored_total_groups}"
-        )
+        status = format_restore_status(self.restored_loaded_groups, self.restored_total_groups, "正在继续加载已保存结果")
+        self.status_label.setText(status)
+        self.group_status_label.setText(status)
+        self.history_state = status
+        self.refresh_health_diagnostics()
         self.start_restore_session(session_id=self.restored_session_id, offset_groups=self.restored_loaded_groups)
 
     def on_restore_failed(self, message: str) -> None:
@@ -560,24 +574,24 @@ class MainWindow(QMainWindow):
             merged = groups if offset_groups == 0 else [*self.groups, *groups]
             self.on_scan_finished(merged, restored=True)
             self.restored_loaded_groups = min(offset_groups + len(groups), total_groups)
+            self.progress.setMaximum(max(total_groups, 1))
+            self.progress.setValue(self.restored_loaded_groups)
             if self.restored_loaded_groups < total_groups:
                 self.load_more_groups_button.setEnabled(True)
                 self.load_more_groups_button.setText(
                     f"继续加载更多 ({self.restored_loaded_groups}/{self.restored_total_groups})"
                 )
-                self.history_state = "已恢复部分历史结果，可继续加载"
-                self.group_status_label.setText(
-                    f"已恢复 {self.restored_loaded_groups}/{self.restored_total_groups} 组历史结果，可继续加载更多。"
-                )
-                self.status_label.setText(
-                    f"已恢复 {self.restored_loaded_groups}/{self.restored_total_groups} 组，可继续加载，无需重新扫描。"
-                )
+                status = format_restore_status(self.restored_loaded_groups, self.restored_total_groups, "已恢复部分历史结果")
+                self.history_state = status
+                self.group_status_label.setText(f"{status}，可继续加载更多。")
+                self.status_label.setText(f"{status}，无需重新扫描。")
             else:
                 self.load_more_groups_button.setEnabled(False)
                 self.load_more_groups_button.setText("已全部加载")
-                self.history_state = "已恢复全部历史结果"
-                self.group_status_label.setText(f"已恢复全部 {self.restored_total_groups} 组历史结果。")
-                self.status_label.setText(f"已恢复全部 {self.restored_total_groups} 组已保存结果。")
+                status = format_restore_status(self.restored_loaded_groups, self.restored_total_groups, "已恢复全部历史结果")
+                self.history_state = status
+                self.group_status_label.setText(status)
+                self.status_label.setText(status)
         else:
             self.status_label.setText("准备就绪")
             self.group_status_label.setText(f"当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
@@ -1990,7 +2004,7 @@ class MainWindow(QMainWindow):
         self.preview_label.setText("扫描中")
         self.detail_label.clear()
         self.progress.setValue(0)
-        self.status_label.setText("正在扫描")
+        self.status_label.setText(format_scan_start(len(roots)))
         self.history_state = "正在执行新扫描"
         self.refresh_health_diagnostics()
         self.media_player.stop()
@@ -2018,9 +2032,11 @@ class MainWindow(QMainWindow):
             self.cancel_button.setEnabled(False)
 
     def on_progress(self, message: str, current: int, total: int) -> None:
-        self.status_label.setText(message)
+        formatted = format_progress_message(message, current, total)
+        self.status_label.setText(formatted)
+        self.history_state = formatted
         self.progress.setMaximum(max(total, 1))
-        self.progress.setValue(current)
+        self.progress.setValue(min(max(current, 0), max(total, 1)))
 
     def on_scan_finished(self, groups: list[DuplicateGroup], restored: bool = False) -> None:
         self.groups = groups

@@ -40,6 +40,12 @@ from photo_dedupe.core.organizer import (
     organize_images_by_date,
     summarize_organize_preview,
 )
+from photo_dedupe.core.progress_status import (
+    format_progress_message,
+    format_restore_status,
+    format_scan_start,
+    progress_percent,
+)
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records, describe_keep_reasons
 from photo_dedupe.core.safety import SEVERITY_ERROR, SEVERITY_WARNING, validate_scan_roots
@@ -184,6 +190,35 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("Photo Manage GPT 健康诊断报告", report)
         self.assertIn("应用版本: 正常", report)
         self.assertIn("C:/logs/app.log", report)
+
+
+class ProgressStatusTests(unittest.TestCase):
+    def test_progress_percent_clamps_values(self) -> None:
+        self.assertEqual(progress_percent(5, 10), 50)
+        self.assertEqual(progress_percent(15, 10), 100)
+        self.assertEqual(progress_percent(-1, 10), 0)
+        self.assertEqual(progress_percent(1, 0), 0)
+
+    def test_scan_progress_message_includes_count_and_percent(self) -> None:
+        message = format_progress_message("正在读取文件", 5, 10)
+
+        self.assertIn("5/10", message)
+        self.assertIn("50%", message)
+
+    def test_scan_progress_message_handles_unknown_total(self) -> None:
+        self.assertIn("处理中", format_progress_message("正在读取文件", 1, 0))
+
+    def test_restore_status_without_total_reads_cache_index(self) -> None:
+        self.assertIn("读取缓存索引", format_restore_status(0, 0))
+
+    def test_restore_status_includes_count_and_percent(self) -> None:
+        status = format_restore_status(500, 1200)
+
+        self.assertIn("500/1200", status)
+        self.assertIn("42%", status)
+
+    def test_scan_start_mentions_root_count(self) -> None:
+        self.assertIn("3 个目录", format_scan_start(3))
 
 
 class SingleInstanceTests(unittest.TestCase):
