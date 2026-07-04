@@ -64,6 +64,32 @@ from photo_dedupe.core.video_hash import combine_hashes
 
 
 class ScanSafetyTests(unittest.TestCase):
+    def test_scan_safety_rejects_missing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing-drive"
+
+            issues = validate_scan_roots([missing])
+
+        self.assertTrue(any(issue.severity == SEVERITY_ERROR and "不存在" in issue.title for issue in issues))
+
+    def test_scan_safety_rejects_file_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = Path(directory) / "photo.jpg"
+            file_path.write_text("x", encoding="utf-8")
+
+            issues = validate_scan_roots([file_path])
+
+        self.assertTrue(any(issue.severity == SEVERITY_ERROR and "不是文件夹" in issue.title for issue in issues))
+
+    def test_scan_safety_warns_about_empty_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / "empty"
+            empty.mkdir()
+
+            issues = validate_scan_roots([empty])
+
+        self.assertTrue(any(issue.severity == SEVERITY_WARNING and "为空" in issue.title for issue in issues))
+
     def test_scan_safety_rejects_drive_root(self) -> None:
         drive_root = Path(Path.cwd().anchor or "/")
 
@@ -93,6 +119,7 @@ class ScanSafetyTests(unittest.TestCase):
             target = Path(directory) / "Sorted"
             root.mkdir()
             target.mkdir()
+            (root / "photo.jpg").write_text("x", encoding="utf-8")
 
             issues = validate_scan_roots([root], target_roots=[target])
 

@@ -71,11 +71,40 @@ def validate_scan_roots(
             issues.append(
                 ScanRootIssue(
                     path=root,
-                    severity=SEVERITY_WARNING,
-                    title="目录不存在",
-                    message="这个目录当前不可访问，扫描时会被跳过。请确认移动硬盘、网络盘或路径是否已经连接。",
+                    severity=SEVERITY_ERROR,
+                    title="目录不存在或未连接",
+                    message="这个目录当前不可访问。请先确认移动硬盘、网络盘或路径已经连接，再开始扫描。",
                 )
             )
+        elif not root.is_dir():
+            issues.append(
+                ScanRootIssue(
+                    path=root,
+                    severity=SEVERITY_ERROR,
+                    title="扫描目标不是文件夹",
+                    message="扫描目录必须是文件夹。请移除这个路径，改选它所在的文件夹或其他资料目录。",
+                )
+            )
+        else:
+            readable, is_empty = _directory_access(root)
+            if not readable:
+                issues.append(
+                    ScanRootIssue(
+                        path=root,
+                        severity=SEVERITY_ERROR,
+                        title="目录无法读取",
+                        message="当前用户没有权限读取这个目录，或目录暂时不可用。请检查权限后再扫描。",
+                    )
+                )
+            elif is_empty:
+                issues.append(
+                    ScanRootIssue(
+                        path=root,
+                        severity=SEVERITY_WARNING,
+                        title="目录为空",
+                        message="这个目录当前没有文件或子目录，扫描可能不会产生结果。",
+                    )
+                )
 
         for target in normalized_targets:
             if _same_or_under(root, target):
@@ -138,6 +167,14 @@ def _same_or_under(path: Path, root: Path) -> bool:
 def _is_drive_or_filesystem_root(path: Path) -> bool:
     normalized = normalize_path(path)
     return normalized.parent == normalized
+
+
+def _directory_access(path: Path) -> tuple[bool, bool]:
+    try:
+        with os.scandir(path) as entries:
+            return True, next(entries, None) is None
+    except OSError:
+        return False, False
 
 
 def _known_system_roots() -> list[Path]:
