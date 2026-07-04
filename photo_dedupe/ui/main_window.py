@@ -90,6 +90,7 @@ from photo_dedupe.core.progress_status import (
     format_restore_status,
     format_scan_start,
 )
+from photo_dedupe.core.processing_risk import build_processing_risk_summary, format_processing_confirmation
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import (
     build_processing_plan,
@@ -2747,21 +2748,15 @@ class MainWindow(QMainWindow):
             )
             return
 
-        affected_dirs = "\n".join(str(path) for path in plan.affected_directories[:8])
-        if len(plan.affected_directories) > 8:
-            affected_dirs += f"\n... 另有 {len(plan.affected_directories) - 8} 个目录"
+        risk_summary = build_processing_risk_summary(
+            plan,
+            self.action_combo.currentText(),
+            self.destination,
+        )
         reply = QMessageBox.question(
             self,
             "确认处理",
-            (
-                f"当前筛选结果：{len(groups)} 组。\n"
-                f"保留文件：{plan.keep_count} 个。\n"
-                f"将按“{self.action_combo.currentText()}”处理：{len(selected_to_move)} 个文件。\n"
-                f"预估可释放/转移空间：{format_size(plan.reclaimable_bytes)}。\n"
-                f"保护目录跳过：{plan.protected_skip_count} 个文件。\n\n"
-                f"涉及目录：\n{affected_dirs}\n\n"
-                f"目标目录：\n{self.destination}"
-            ),
+            format_processing_confirmation(risk_summary),
         )
         if reply != QMessageBox.StandardButton.Yes:
             return

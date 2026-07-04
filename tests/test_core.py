@@ -64,6 +64,13 @@ from photo_dedupe.core.progress_status import (
     format_scan_start,
     progress_percent,
 )
+from photo_dedupe.core.processing_risk import (
+    RISK_HIGH,
+    RISK_LOW,
+    RISK_MEDIUM,
+    build_processing_risk_summary,
+    format_processing_confirmation,
+)
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records, describe_keep_reasons
 from photo_dedupe.core.safety import SEVERITY_ERROR, SEVERITY_WARNING, validate_scan_roots
@@ -1270,6 +1277,48 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual([record.path for record in plan.records_to_process], [remove.path])
         self.assertEqual(plan.protected_skip_count, 1)
         self.assertEqual(plan.reclaimable_bytes, 30)
+
+    def test_processing_risk_summary_is_low_for_small_move(self) -> None:
+        root = Path("D:/demo")
+        keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+        remove = FileRecord(path=root / "temp" / "photo-copy.jpg", size=30, modified_at=3.0, keep_selected=False)
+        group = DuplicateGroup(kind="exact", title="group", records=[keep, remove])
+        plan = build_processing_plan([group], set())
+
+        summary = build_processing_risk_summary(plan, "移动到目标目录", Path("D:/duplicates"))
+        text = format_processing_confirmation(summary)
+
+        self.assertEqual(summary.risk_level, RISK_LOW)
+        self.assertIn("风险等级：低", text)
+        self.assertIn("目标目录", text)
+
+    def test_processing_risk_summary_warns_about_protected_skips(self) -> None:
+        root = Path("D:/demo")
+        protected = root / "library"
+        safe = FileRecord(path=protected / "photo.jpg", size=10, modified_at=1.0, keep_selected=False)
+        keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+        remove = FileRecord(path=root / "temp" / "photo-copy.jpg", size=30, modified_at=3.0, keep_selected=False)
+        group = DuplicateGroup(kind="exact", title="group", records=[safe, keep, remove])
+        plan = build_processing_plan([group], {protected})
+
+        summary = build_processing_risk_summary(plan, "移动到目标目录", Path("D:/duplicates"))
+
+        self.assertEqual(summary.risk_level, RISK_MEDIUM)
+        self.assertTrue(any("保护目录" in warning for warning in summary.warnings))
+
+    def test_processing_risk_summary_marks_trash_as_high_risk(self) -> None:
+        root = Path("D:/demo")
+        keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+        remove = FileRecord(path=root / "temp" / "photo-copy.jpg", size=30, modified_at=3.0, keep_selected=False)
+        group = DuplicateGroup(kind="exact", title="group", records=[keep, remove])
+        plan = build_processing_plan([group], set())
+
+        summary = build_processing_risk_summary(plan, "移动到回收站", Path("D:/duplicates"))
+        text = format_processing_confirmation(summary)
+
+        self.assertEqual(summary.risk_level, RISK_HIGH)
+        self.assertIsNone(summary.destination)
+        self.assertIn("系统回收站", text)
 
     def test_trash_operation_is_logged_and_exported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
