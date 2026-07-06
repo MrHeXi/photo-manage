@@ -563,6 +563,7 @@ class MainWindow(QMainWindow):
             app_version=APP_VERSION,
             loaded_groups=self.restored_loaded_groups,
             total_groups=self.restored_total_groups,
+            report_dir=self._operation_report_dir(),
         )
 
     def _current_support_report(self) -> str:
@@ -575,6 +576,7 @@ class MainWindow(QMainWindow):
             safe_mode=self.safe_mode,
             loaded_groups=self.restored_loaded_groups,
             total_groups=self.restored_total_groups,
+            report_dir=self._operation_report_dir(),
         )
 
     def refresh_health_diagnostics(self) -> None:
@@ -588,7 +590,7 @@ class MainWindow(QMainWindow):
             status_cell = QTableWidgetItem(item.status)
             if item.status in {"正常"}:
                 status_cell.setForeground(QColor("#1a7f37"))
-            elif item.status in {"可选缺失", "未创建", "待加载", "提示"}:
+            elif item.status in {"可选缺失", "未创建", "待创建", "待加载", "提示"}:
                 status_cell.setForeground(QColor("#bf8700"))
             else:
                 status_cell.setForeground(QColor("#cf222e"))

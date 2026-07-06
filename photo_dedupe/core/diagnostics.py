@@ -107,6 +107,7 @@ def build_health_items(
     app_version: str | None = None,
     loaded_groups: int = 0,
     total_groups: int = 0,
+    report_dir: Path | None = None,
 ) -> list[DiagnosticItem]:
     database_detail = str(database_path)
     if database_path.exists():
@@ -139,6 +140,13 @@ def build_health_items(
         ),
         DiagnosticItem("运行环境", "正常", f"Python {sys.version.split()[0]} / {platform.platform()}"),
     ]
+    if report_dir is not None:
+        report_status = "正常" if report_dir.exists() else "待创建"
+        report_detail = str(report_dir)
+        if report_dir.exists():
+            report_count = sum(1 for path in report_dir.glob("*.txt") if path.is_file())
+            report_detail = f"{report_detail} ({report_count} 份文本报告)"
+        items.insert(2, DiagnosticItem("处理报告目录", report_status, report_detail))
     if app_version:
         items.insert(0, DiagnosticItem("应用版本", "正常", app_version))
     return items
@@ -167,6 +175,7 @@ def build_support_diagnostic_report(
     cwd: Path | None = None,
     pid: int | None = None,
     frozen: bool | None = None,
+    report_dir: Path | None = None,
 ) -> str:
     resolved_data_dir = data_dir or database_path.parent
     resolved_executable = executable or sys.executable
@@ -181,6 +190,7 @@ def build_support_diagnostic_report(
         app_version=app_version,
         loaded_groups=loaded_groups,
         total_groups=total_groups,
+        report_dir=report_dir,
     )
     history_detail = f"{history_state}，已加载 {loaded_groups}/{total_groups} 组" if total_groups else history_state
 
@@ -201,6 +211,7 @@ def build_support_diagnostic_report(
         f"- 数据目录：{resolved_data_dir}",
         f"- 数据库：{database_path}",
         f"- 日志：{log_path}",
+        f"- 报告目录：{report_dir if report_dir is not None else resolved_data_dir / 'reports'}",
         "",
         "环境",
         f"- Python：{sys.version.split()[0]}",

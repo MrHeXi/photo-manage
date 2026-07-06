@@ -437,8 +437,11 @@ class DiagnosticsTests(unittest.TestCase):
             root = Path(directory)
             database_path = root / "photo_manage.db"
             log_path = root / "app.log"
+            report_dir = root / "reports"
             database_path.write_text("db", encoding="utf-8")
             log_path.write_text("log", encoding="utf-8")
+            report_dir.mkdir()
+            (report_dir / "operation-report.txt").write_text("report", encoding="utf-8")
 
             items = build_health_items(
                 database_path=database_path,
@@ -448,12 +451,15 @@ class DiagnosticsTests(unittest.TestCase):
                 app_version=__version__,
                 loaded_groups=500,
                 total_groups=1200,
+                report_dir=report_dir,
             )
 
         by_name = {item.name: item for item in items}
         self.assertEqual(by_name["应用版本"].detail, __version__)
         self.assertEqual(by_name["数据库"].status, "正常")
         self.assertEqual(by_name["启动日志"].status, "正常")
+        self.assertEqual(by_name["处理报告目录"].status, "正常")
+        self.assertIn("1 份文本报告", by_name["处理报告目录"].detail)
         self.assertEqual(by_name["视频指纹"].status, "可选缺失")
         self.assertIn("500/1200", by_name["历史缓存"].detail)
         self.assertEqual(by_name["后台残留排查"].status, "提示")
@@ -476,9 +482,11 @@ class DiagnosticsTests(unittest.TestCase):
             root = Path(directory)
             database_path = root / "photo_manage.db"
             log_path = root / "logs" / "app.log"
+            report_dir = root / "reports"
             database_path.write_text("db", encoding="utf-8")
             log_path.parent.mkdir()
             log_path.write_text("log", encoding="utf-8")
+            report_dir.mkdir()
 
             report = build_support_diagnostic_report(
                 app_version="0.1.0",
@@ -494,6 +502,7 @@ class DiagnosticsTests(unittest.TestCase):
                 cwd=root / "cwd",
                 pid=1234,
                 frozen=True,
+                report_dir=report_dir,
             )
 
         self.assertIn("Photo Manage GPT 诊断信息", report)
@@ -502,6 +511,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("打包运行：是", report)
         self.assertIn("进程 PID：1234", report)
         self.assertIn("PhotoManageGPT.exe", report)
+        self.assertIn(f"报告目录：{report_dir}", report)
         self.assertIn("已加载 12/30 组", report)
         self.assertIn("ffmpeg：已检测到", report)
         self.assertIn("不包含 AI API Key", report)
