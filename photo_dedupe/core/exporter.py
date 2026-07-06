@@ -4,7 +4,7 @@ import csv
 import html
 from pathlib import Path
 
-from photo_dedupe.core.models import AiAnalysisRecord, DuplicateGroup, FileRecord, OperationRecord
+from photo_dedupe.core.models import AiAnalysisRecord, DuplicateGroup, FileRecord, OperationRecord, ScanSessionSummaryRecord
 
 
 def _format_size(size: int) -> str:
@@ -77,6 +77,25 @@ def export_ai_analysis_csv(records: list[AiAnalysisRecord], target: Path) -> Non
                     "" if record.score is None else record.score,
                     record.summary,
                     record.created_at,
+                ]
+            )
+
+
+def export_scan_sessions_csv(records: list[ScanSessionSummaryRecord], target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.writer(file)
+        writer.writerow(["id", "created_at", "root_paths", "group_count", "file_count", "duplicate_bytes", "reclaimable_bytes"])
+        for record in records:
+            writer.writerow(
+                [
+                    record.id,
+                    record.created_at,
+                    " | ".join(str(path) for path in record.root_paths),
+                    record.group_count,
+                    record.file_count,
+                    record.duplicate_bytes,
+                    record.reclaimable_bytes,
                 ]
             )
 

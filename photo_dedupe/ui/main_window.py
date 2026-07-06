@@ -54,7 +54,7 @@ from photo_dedupe.core.diagnostics import (
     setup_logging,
 )
 from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory_duplicate_index
-from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv
+from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv, export_scan_sessions_csv
 from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
 from photo_dedupe.core.file_reveal import operation_reveal_path, reveal_in_file_manager
@@ -709,7 +709,9 @@ class MainWindow(QMainWindow):
         refresh_history_button.clicked.connect(self.refresh_history)
         clear_history_button = QPushButton("清空扫描历史")
         clear_history_button.clicked.connect(self.clear_history)
-        export_history_button = QPushButton("导出扫描历史")
+        export_sessions_button = QPushButton("导出任务记录")
+        export_sessions_button.clicked.connect(self.export_scan_sessions)
+        export_history_button = QPushButton("导出文件缓存")
         export_history_button.clicked.connect(self.export_history)
         save_ai_button = QPushButton("保存 AI 配置")
         save_ai_button.clicked.connect(self.save_ai_settings)
@@ -1015,6 +1017,7 @@ class MainWindow(QMainWindow):
         delete_session_button.clicked.connect(self.delete_selected_scan_session)
         history_buttons.addWidget(delete_session_button)
         history_buttons.addWidget(clear_history_button)
+        history_buttons.addWidget(export_sessions_button)
         history_buttons.addWidget(export_history_button)
 
         history_panel = QWidget()
@@ -2874,19 +2877,8 @@ class MainWindow(QMainWindow):
         )
 
     def refresh_history(self) -> None:
-        sessions = self.database.list_scan_sessions()
+        sessions = self._sorted_scan_sessions(self.database.list_scan_sessions())
         self.scan_session_summaries = list(sessions)
-        sort_label = self.session_sort_combo.currentText()
-        if sort_label == "按时间：最早优先":
-            sessions = sorted(sessions, key=lambda item: item.created_at)
-        elif sort_label == "按预估可省：从大到小":
-            sessions = sorted(sessions, key=lambda item: item.reclaimable_bytes, reverse=True)
-        elif sort_label == "按占用空间：从大到小":
-            sessions = sorted(sessions, key=lambda item: item.duplicate_bytes, reverse=True)
-        elif sort_label == "按分组数：从多到少":
-            sessions = sorted(sessions, key=lambda item: item.group_count, reverse=True)
-        else:
-            sessions = sorted(sessions, key=lambda item: item.created_at, reverse=True)
         self.session_table.setRowCount(len(sessions))
         for row, session in enumerate(sessions):
             created = datetime.fromtimestamp(session.created_at).strftime("%Y-%m-%d %H:%M:%S")
@@ -2924,6 +2916,41 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.history_table.setItem(row, column, QTableWidgetItem(value))
         self.history_table.resizeRowsToContents()
+
+    def _sorted_scan_sessions(self, sessions):
+        sort_label = self.session_sort_combo.currentText()
+        if sort_label == "按时间：最早优先":
+            return sorted(sessions, key=lambda item: item.created_at)
+        if sort_label == "按预估可省：从大到小":
+            return sorted(sessions, key=lambda item: item.reclaimable_bytes, reverse=True)
+        if sort_label == "按占用空间：从大到小":
+            return sorted(sessions, key=lambda item: item.duplicate_bytes, reverse=True)
+        if sort_label == "按分组数：从多到少":
+            return sorted(sessions, key=lambda item: item.group_count, reverse=True)
+        return sorted(sessions, key=lambda item: item.created_at, reverse=True)
+
+    def _scan_session_matches_filter(self, session) -> bool:
+        keyword = self.session_filter_input.text().strip().lower()
+        if keyword:
+            created = datetime.fromtimestamp(session.created_at).strftime("%Y-%m-%d %H:%M:%S")
+            row_values = [
+                created,
+                " ".join(str(path) for path in session.root_paths),
+                str(session.group_count),
+                str(session.file_count),
+                format_size(session.duplicate_bytes),
+                format_size(session.reclaimable_bytes),
+            ]
+            if keyword not in " | ".join(row_values).lower():
+                return False
+
+        range_label = self.session_range_combo.currentText()
+        now_ts = datetime.now().timestamp()
+        if range_label == "最近 7 天":
+            return (now_ts - session.created_at) <= 7 * 24 * 60 * 60
+        if range_label == "最近 30 天":
+            return (now_ts - session.created_at) <= 30 * 24 * 60 * 60
+        return True
 
     def apply_session_filter(self) -> None:
         keyword = self.session_filter_input.text().strip().lower()
@@ -3161,8 +3188,24 @@ class MainWindow(QMainWindow):
             return
         QMessageBox.information(self, "导出完成", target)
 
+    def export_scan_sessions(self) -> None:
+        target, _ = QFileDialog.getSaveFileName(self, "导出扫描任务记录", "scan-sessions.csv", "CSV Files (*.csv)")
+        if not target:
+            return
+        try:
+            sessions = self._sorted_scan_sessions(self.database.list_scan_sessions(limit=10000))
+            visible_sessions = [session for session in sessions if self._scan_session_matches_filter(session)]
+            if not visible_sessions:
+                QMessageBox.information(self, "没有可导出内容", "当前扫描任务筛选结果为空。")
+                return
+            export_scan_sessions_csv(visible_sessions, Path(target))
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        QMessageBox.information(self, "导出完成", target)
+
     def export_history(self) -> None:
-        target, _ = QFileDialog.getSaveFileName(self, "导出扫描历史", "scan-history.csv", "CSV Files (*.csv)")
+        target, _ = QFileDialog.getSaveFileName(self, "导出文件缓存", "scanned-files.csv", "CSV Files (*.csv)")
         if not target:
             return
         try:

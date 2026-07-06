@@ -22,13 +22,14 @@ from photo_dedupe.core.exporter import (
     export_duplicate_report_html,
     export_files_csv,
     export_operations_csv,
+    export_scan_sessions_csv,
 )
 from photo_dedupe.core.file_details import inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
 from photo_dedupe.core.file_reveal import build_reveal_command, operation_reveal_path
 from photo_dedupe.core.group_summary import summarize_duplicate_group
 from photo_dedupe.core.image_compare import build_image_compare_items
-from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
+from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord, ScanSessionSummaryRecord
 from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
     OrganizePreviewSummary,
@@ -1324,6 +1325,31 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(sessions[0].file_count, 2)
         self.assertEqual(sessions[0].duplicate_bytes, 20)
         self.assertEqual(sessions[0].reclaimable_bytes, 10)
+
+    def test_scan_sessions_can_be_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "scan-sessions.csv"
+            sessions = [
+                ScanSessionSummaryRecord(
+                    id=7,
+                    created_at=123.0,
+                    root_paths=[Path("D:/Photos"), Path("E:/Backup")],
+                    group_count=3,
+                    file_count=9,
+                    duplicate_bytes=1200,
+                    reclaimable_bytes=800,
+                )
+            ]
+
+            export_scan_sessions_csv(sessions, target)
+            with target.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(rows[0], ["id", "created_at", "root_paths", "group_count", "file_count", "duplicate_bytes", "reclaimable_bytes"])
+        self.assertEqual(rows[1][0], "7")
+        self.assertIn("D:\\Photos", rows[1][2])
+        self.assertIn("E:\\Backup", rows[1][2])
 
     def test_delete_single_scan_session_keeps_other_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
