@@ -90,6 +90,18 @@ from photo_dedupe.core.operation_report import (
     build_processing_result_report,
     format_operation_result_report,
 )
+from photo_dedupe.core.operation_filters import (
+    ACTION_ALL,
+    ACTION_MOVE,
+    ACTION_TRASH,
+    STATUS_ALL,
+    STATUS_CAN_UNDO,
+    STATUS_NOT_UNDOABLE,
+    STATUS_UNDONE,
+    filter_operations,
+    format_operation_filter_summary,
+    summarize_operations,
+)
 from photo_dedupe.core.progress_status import (
     format_progress_message,
     format_restore_status,
@@ -342,6 +354,9 @@ class MainWindow(QMainWindow):
         self.thumbnail_list = QListWidget()
         self.file_table = QTableWidget(0, 9)
         self.operations_table = QTableWidget(0, 6)
+        self.operation_action_filter_combo = QComboBox()
+        self.operation_status_filter_combo = QComboBox()
+        self.operation_search_input = QLineEdit()
         self.session_table = QTableWidget(0, 7)
         self.history_table = QTableWidget(0, 7)
         self.ai_table = QTableWidget(0, 5)
@@ -374,6 +389,7 @@ class MainWindow(QMainWindow):
         self.ai_batch_button = QPushButton("AI 判断当前分组")
         self.destination_label = QLabel("")
         self.group_status_label = QLabel("")
+        self.operation_summary_label = QLabel("")
         self.session_summary_label = QLabel("")
         self.health_summary_label = QLabel("")
         self.organize_help_label = QLabel("")
@@ -680,6 +696,12 @@ class MainWindow(QMainWindow):
         reveal_original_op_button.clicked.connect(lambda _checked=False: self.reveal_selected_operation("original"))
         export_ops_button = QPushButton("导出操作记录")
         export_ops_button.clicked.connect(self.export_operations)
+        self.operation_action_filter_combo.addItems([ACTION_ALL, ACTION_MOVE, ACTION_TRASH])
+        self.operation_action_filter_combo.currentIndexChanged.connect(self.refresh_operations)
+        self.operation_status_filter_combo.addItems([STATUS_ALL, STATUS_CAN_UNDO, STATUS_UNDONE, STATUS_NOT_UNDOABLE])
+        self.operation_status_filter_combo.currentIndexChanged.connect(self.refresh_operations)
+        self.operation_search_input.setPlaceholderText("按原路径或当前位置筛选")
+        self.operation_search_input.textChanged.connect(self.refresh_operations)
         refresh_history_button = QPushButton("刷新历史")
         refresh_history_button.clicked.connect(self.refresh_history)
         clear_history_button = QPushButton("清空扫描历史")
@@ -931,11 +953,19 @@ class MainWindow(QMainWindow):
         ops_buttons.addWidget(reveal_original_op_button)
         ops_buttons.addWidget(export_ops_button)
 
+        ops_filter_row = QHBoxLayout()
+        ops_filter_row.addWidget(self.operation_action_filter_combo)
+        ops_filter_row.addWidget(self.operation_status_filter_combo)
+        ops_filter_row.addWidget(self.operation_search_input, 1)
+
         operations_panel = QWidget()
         operations_panel.setObjectName("ContentPanel")
         operations_layout = QVBoxLayout(operations_panel)
         operations_layout.setContentsMargins(14, 14, 14, 14)
         operations_layout.setSpacing(10)
+        self.operation_summary_label.setWordWrap(True)
+        operations_layout.addWidget(self.operation_summary_label)
+        operations_layout.addLayout(ops_filter_row)
         operations_layout.addWidget(self.operations_table)
         operations_layout.addLayout(ops_buttons)
 
@@ -2800,7 +2830,15 @@ class MainWindow(QMainWindow):
         self._remove_moved_sources_from_groups(moved_sources)
 
     def refresh_operations(self) -> None:
-        operations = self.database.list_operations()
+        all_operations = self.database.list_operations(limit=10000)
+        operations = filter_operations(
+            all_operations,
+            self.operation_action_filter_combo.currentText(),
+            self.operation_status_filter_combo.currentText(),
+            self.operation_search_input.text(),
+        )
+        summary = summarize_operations(all_operations, operations)
+        self.operation_summary_label.setText(format_operation_filter_summary(summary))
         self.operations_table.setRowCount(len(operations))
         for row, operation in enumerate(operations):
             self._set_operation_row(row, operation)

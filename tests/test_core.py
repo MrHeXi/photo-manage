@@ -47,6 +47,14 @@ from photo_dedupe.core.operation_report import (
     build_processing_result_report,
     format_operation_result_report,
 )
+from photo_dedupe.core.operation_filters import (
+    ACTION_MOVE,
+    ACTION_TRASH,
+    STATUS_UNDONE,
+    filter_operations,
+    format_operation_filter_summary,
+    summarize_operations,
+)
 from photo_dedupe.core.organize_profiles import (
     OrganizeProfile,
     clean_profile_name,
@@ -568,6 +576,32 @@ class FileRevealTests(unittest.TestCase):
         operation = OperationRecord(1, "trash", Path("D:/Photos/a.jpg"), Path(""), 1.0)
 
         self.assertEqual(operation_reveal_path(operation, "current"), Path("D:/Photos"))
+
+
+class OperationFilterTests(unittest.TestCase):
+    def test_filter_operations_by_action_status_and_keyword(self) -> None:
+        move = OperationRecord(1, "move", Path("D:/Camera/a.jpg"), Path("E:/Sorted/a.jpg"), 1.0)
+        undone = OperationRecord(2, "move", Path("D:/Camera/b.jpg"), Path("E:/Sorted/b.jpg"), 2.0, undone_at=3.0)
+        trash = OperationRecord(3, "trash", Path("D:/Cache/c.jpg"), Path(""), 4.0)
+        operations = [move, undone, trash]
+
+        self.assertEqual(filter_operations(operations, action_filter=ACTION_TRASH), [trash])
+        self.assertEqual(filter_operations(operations, status_filter=STATUS_UNDONE), [undone])
+        self.assertEqual(filter_operations(operations, action_filter=ACTION_MOVE, keyword="sorted"), [move, undone])
+
+    def test_operation_filter_summary_mentions_visible_counts(self) -> None:
+        move = OperationRecord(1, "move", Path("D:/Camera/a.jpg"), Path("E:/Sorted/a.jpg"), 1.0)
+        trash = OperationRecord(2, "trash", Path("D:/Cache/c.jpg"), Path(""), 4.0)
+        visible = [move]
+
+        summary = summarize_operations([move, trash], visible)
+        text = format_operation_filter_summary(summary)
+
+        self.assertEqual(summary.total_count, 2)
+        self.assertEqual(summary.visible_count, 1)
+        self.assertEqual(summary.move_count, 1)
+        self.assertIn("当前显示 1/2 条", text)
+        self.assertIn("可撤销 1", text)
 
 
 class MainWindowStartupTests(unittest.TestCase):
