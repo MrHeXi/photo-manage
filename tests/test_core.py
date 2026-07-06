@@ -774,10 +774,12 @@ class MainWindowStartupTests(unittest.TestCase):
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication, QLineEdit, QScrollArea
-        from photo_dedupe.ui.main_window import MainWindow
+        from photo_dedupe.ui.main_window import MainWindow, find_support_document
 
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LOCALAPPDATA": directory}):
+            quickstart = Path(directory) / "QUICKSTART.md"
+            quickstart.write_text("quickstart", encoding="utf-8")
             window = MainWindow(safe_mode=True)
             try:
                 self.assertIsNone(window.restore_worker)
@@ -792,6 +794,16 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertEqual(window.health_data_dir_button.text(), "打开数据目录")
                 self.assertEqual(window.health_log_dir_button.text(), "打开日志目录")
                 self.assertIsNotNone(window.findChild(QScrollArea, "SidebarScroll"))
+                help_action = next((action for action in window.menuBar().actions() if action.text() == "帮助"), None)
+                self.assertIsNotNone(help_action)
+                help_menu = help_action.menu()
+                self.assertIsNotNone(help_menu)
+                help_actions = [action.text() for action in help_menu.actions()]
+                self.assertIn("打开三分钟上手", help_actions)
+                self.assertIn("打开健康诊断", help_actions)
+                self.assertEqual(find_support_document("QUICKSTART.md", [Path(directory)]), quickstart)
+                self.assertTrue(window.switch_to_tab("健康诊断"))
+                self.assertEqual(window.main_tabs.tabText(window.main_tabs.currentIndex()), "健康诊断")
                 window.refresh_onboarding()
                 self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
                 self.assertIn("选择扫描目录", window.onboarding_summary_label.text())

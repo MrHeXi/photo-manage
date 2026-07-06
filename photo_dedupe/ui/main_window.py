@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QThread, Qt, QTimer, Signal, QUrl
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -132,6 +132,11 @@ APP_VERSION = __version__
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 APP_USER_MODEL_ID = "PhotoManageGPT.PhotoManageGPT.1"
 EMPTY_SCAN_GUIDANCE = "暂无重复分组。添加扫描目录，必要时先设为保护目录，然后开始扫描。"
+SUPPORT_DOCUMENTS = {
+    "quickstart": "QUICKSTART.md",
+    "readme": "README.md",
+    "changelog": "CHANGELOG.md",
+}
 
 
 def app_asset_path(name: str) -> Path:
@@ -144,6 +149,23 @@ def load_app_icon() -> QIcon:
         if path.exists():
             return QIcon(str(path))
     return QIcon()
+
+
+def find_support_document(filename: str, roots: list[Path] | None = None) -> Path | None:
+    candidates: list[Path] = []
+    if roots is not None:
+        candidates.extend(Path(root) for root in roots)
+    else:
+        if getattr(sys, "frozen", False):
+            candidates.append(Path(sys.executable).resolve().parent)
+        candidates.append(Path.cwd())
+        candidates.append(Path(__file__).resolve().parents[2])
+
+    for root in candidates:
+        path = root / filename
+        if path.exists():
+            return path
+    return None
 
 
 def set_windows_app_user_model_id() -> None:
@@ -1297,6 +1319,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(health_panel, "健康诊断")
 
         self.main_tabs.currentChanged.connect(self.on_tab_changed)
+        self._build_help_menu()
 
         splitter = QSplitter()
         splitter.setObjectName("MainSplitter")
@@ -1311,6 +1334,63 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.addWidget(splitter)
         self.setCentralWidget(container)
+
+    def _build_help_menu(self) -> None:
+        help_menu = self.menuBar().addMenu("帮助")
+        actions = [
+            ("打开三分钟上手", lambda _checked=False: self.open_support_document("quickstart")),
+            ("打开使用手册", lambda _checked=False: self.open_support_document("readme")),
+            ("打开更新日志", lambda _checked=False: self.open_support_document("changelog")),
+        ]
+        for label, callback in actions:
+            action = QAction(label, self)
+            action.triggered.connect(callback)
+            help_menu.addAction(action)
+        help_menu.addSeparator()
+
+        health_action = QAction("打开健康诊断", self)
+        health_action.triggered.connect(lambda _checked=False: self.switch_to_tab("健康诊断"))
+        help_menu.addAction(health_action)
+
+        copy_diagnostics_action = QAction("复制诊断信息", self)
+        copy_diagnostics_action.triggered.connect(self.copy_health_diagnostics)
+        help_menu.addAction(copy_diagnostics_action)
+        help_menu.addSeparator()
+
+        about_action = QAction(f"关于 {APP_NAME}", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
+
+    def switch_to_tab(self, tab_name: str) -> bool:
+        for index in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(index) == tab_name:
+                self.main_tabs.setCurrentIndex(index)
+                return True
+        return False
+
+    def open_support_document(self, key: str) -> None:
+        filename = SUPPORT_DOCUMENTS.get(key, key)
+        path = find_support_document(filename)
+        if path is None:
+            QMessageBox.warning(self, "找不到文档", f"未找到 {filename}。请确认发布包是否完整。")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "无法打开文档", str(path))
+            return
+        self.status_label.setText(f"已打开文档：{path.name}")
+
+    def show_about_dialog(self) -> None:
+        QMessageBox.information(
+            self,
+            f"关于 {APP_NAME}",
+            (
+                f"{APP_TITLE}\n\n"
+                "面向 Windows 的照片 / 文件整理去重工具。\n"
+                "默认不做永久删除；保护目录内文件不会被批量移动或回收。\n\n"
+                f"数据库：{self.database.path}\n"
+                f"日志：{self.health_log_path}"
+            ),
+        )
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
