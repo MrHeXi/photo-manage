@@ -2856,19 +2856,22 @@ class MainWindow(QMainWindow):
         self._remove_moved_sources_from_groups(moved_sources)
 
     def refresh_operations(self) -> None:
-        all_operations = self.database.list_operations(limit=10000)
-        operations = filter_operations(
-            all_operations,
-            self.operation_action_filter_combo.currentText(),
-            self.operation_status_filter_combo.currentText(),
-            self.operation_search_input.text(),
-        )
+        all_operations, operations = self._filtered_operations()
         summary = summarize_operations(all_operations, operations)
         self.operation_summary_label.setText(format_operation_filter_summary(summary))
         self.operations_table.setRowCount(len(operations))
         for row, operation in enumerate(operations):
             self._set_operation_row(row, operation)
         self.operations_table.resizeRowsToContents()
+
+    def _filtered_operations(self) -> tuple[list[OperationRecord], list[OperationRecord]]:
+        all_operations = self.database.list_operations(limit=10000)
+        return all_operations, filter_operations(
+            all_operations,
+            self.operation_action_filter_combo.currentText(),
+            self.operation_status_filter_combo.currentText(),
+            self.operation_search_input.text(),
+        )
 
     def refresh_history(self) -> None:
         sessions = self.database.list_scan_sessions()
@@ -3148,7 +3151,11 @@ class MainWindow(QMainWindow):
         if not target:
             return
         try:
-            export_operations_csv(self.database.list_operations(limit=10000), Path(target))
+            _all_operations, operations = self._filtered_operations()
+            if not operations:
+                QMessageBox.information(self, "没有可导出内容", "当前操作记录筛选结果为空。")
+                return
+            export_operations_csv(operations, Path(target))
         except Exception as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
             return

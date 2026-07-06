@@ -605,6 +605,22 @@ class OperationFilterTests(unittest.TestCase):
         self.assertIn("当前显示 1/2 条", text)
         self.assertIn("可撤销 1", text)
 
+    def test_filtered_operations_can_be_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "filtered-operations.csv"
+            move = OperationRecord(1, "move", Path("D:/Camera/a.jpg"), Path("E:/Sorted/a.jpg"), 1.0)
+            trash = OperationRecord(2, "trash", Path("D:/Cache/c.jpg"), Path(""), 4.0)
+            visible = filter_operations([move, trash], action_filter=ACTION_TRASH)
+
+            export_operations_csv(visible, target)
+            with target.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.reader(file))
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][1], "trash")
+        self.assertIn("D:\\Cache\\c.jpg", rows[1][2])
+
 
 class MainWindowStartupTests(unittest.TestCase):
     def test_safe_mode_skips_restore_worker(self) -> None:
