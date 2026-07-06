@@ -105,6 +105,8 @@
 - 模型名，例如 `gpt-4o-mini`
 - API Key
 
+填写后可以先点击“检查 AI 配置”。这个检查只在本机验证地址格式、模型名、API Key 是否缺失，以及最终会请求的 `chat/completions` 端点，不会联网验证 Key 是否有效。
+
 内置入口：
 
 - OpenAI

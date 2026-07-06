@@ -13,7 +13,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QLockFile
 
 from photo_dedupe import __version__
-from photo_dedupe.core.ai_client import parse_chat_content, parse_score
+from photo_dedupe.core.ai_client import AiConfig, format_ai_config_validation, parse_chat_content, parse_score, validate_ai_config
 from photo_dedupe.core.diagnostics import DiagnosticItem, build_health_items, default_log_path, format_health_report, setup_logging
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
 from photo_dedupe.core.exporter import (
@@ -622,6 +622,7 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertIn("添加扫描目录", window.group_status_label.text())
                 tab_names = [window.main_tabs.tabText(index) for index in range(window.main_tabs.count())]
                 self.assertIn("新手向导", tab_names)
+                self.assertEqual(window.ai_check_button.text(), "检查 AI 配置")
                 window.refresh_onboarding()
                 self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
                 self.assertIn("选择扫描目录", window.onboarding_summary_label.text())
@@ -1625,6 +1626,35 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(score, 82.0)
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].model, "vision-model")
+
+    def test_ai_config_endpoint_accepts_base_url_or_full_endpoint(self) -> None:
+        base_config = AiConfig("https://api.example.com/v1", "key", "model")
+        endpoint_config = AiConfig("https://api.example.com/v1/chat/completions", "key", "model")
+
+        self.assertEqual(base_config.endpoint, "https://api.example.com/v1/chat/completions")
+        self.assertEqual(endpoint_config.endpoint, "https://api.example.com/v1/chat/completions")
+
+    def test_ai_config_validation_reports_missing_fields(self) -> None:
+        validation = validate_ai_config("", "", "")
+        text = format_ai_config_validation(validation)
+
+        self.assertFalse(validation.ok)
+        self.assertTrue(any("API 地址" in error for error in validation.errors))
+        self.assertIn("需要补充配置", text)
+
+    def test_ai_config_validation_warns_but_allows_common_variants(self) -> None:
+        http_validation = validate_ai_config("http://localhost:8000/v1", "vision", "12345678")
+        full_endpoint_validation = validate_ai_config(
+            "https://api.example.com/v1/chat/completions",
+            "vision",
+            "12345678",
+        )
+
+        self.assertTrue(http_validation.ok)
+        self.assertTrue(any("HTTP" in warning for warning in http_validation.warnings))
+        self.assertTrue(full_endpoint_validation.ok)
+        self.assertEqual(full_endpoint_validation.endpoint, "https://api.example.com/v1/chat/completions")
+        self.assertTrue(any("chat/completions" in warning for warning in full_endpoint_validation.warnings))
 
     def test_ai_results_can_be_filtered_and_exported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

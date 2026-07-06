@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from photo_dedupe import __version__
-from photo_dedupe.core.ai_client import AiConfig, analyze_image
+from photo_dedupe.core.ai_client import AiConfig, analyze_image, format_ai_config_validation, validate_ai_config
 from photo_dedupe.core.diagnostics import (
     build_health_items,
     default_log_path,
@@ -385,6 +385,7 @@ class MainWindow(QMainWindow):
         self.ai_base_url_input = QLineEdit()
         self.ai_model_input = QLineEdit()
         self.ai_key_input = QLineEdit()
+        self.ai_check_button = QPushButton("检查 AI 配置")
         self.ai_analyze_button = QPushButton("AI 判断当前图片")
         self.ai_batch_button = QPushButton("AI 判断当前分组")
         self.destination_label = QLabel("")
@@ -710,6 +711,7 @@ class MainWindow(QMainWindow):
         export_history_button.clicked.connect(self.export_history)
         save_ai_button = QPushButton("保存 AI 配置")
         save_ai_button.clicked.connect(self.save_ai_settings)
+        self.ai_check_button.clicked.connect(self.check_ai_settings)
         self.ai_analyze_button.clicked.connect(self.analyze_selected_image)
         self.ai_batch_button.clicked.connect(self.analyze_current_group)
         export_ai_button = QPushButton("导出 AI 结果")
@@ -1043,6 +1045,7 @@ class MainWindow(QMainWindow):
         ai_layout.addWidget(self.ai_key_input)
         ai_buttons = QHBoxLayout()
         ai_buttons.addWidget(save_ai_button)
+        ai_buttons.addWidget(self.ai_check_button)
         ai_buttons.addWidget(self.ai_analyze_button)
         ai_buttons.addWidget(self.ai_batch_button)
         ai_layout.addLayout(ai_buttons)
@@ -2348,6 +2351,21 @@ class MainWindow(QMainWindow):
         self._save_ai_settings_silent()
         QMessageBox.information(self, "已保存", "AI 配置已保存到本机数据库。")
 
+    def _current_ai_config_validation(self):
+        return validate_ai_config(
+            self.ai_base_url_input.text(),
+            self.ai_model_input.text(),
+            self.ai_key_input.text(),
+        )
+
+    def check_ai_settings(self) -> None:
+        validation = self._current_ai_config_validation()
+        if validation.normalized_base_url and validation.normalized_base_url != self.ai_base_url_input.text().strip():
+            self.ai_base_url_input.setText(validation.normalized_base_url)
+        title = "AI 配置可用" if validation.ok else "AI 配置需要补充"
+        QMessageBox.information(self, title, format_ai_config_validation(validation))
+        self.status_label.setText("AI 配置检查完成" if validation.ok else "AI 配置需要补充")
+
     def _save_ai_settings_silent(self) -> None:
         self.database.set_setting("ai_base_url", self.ai_base_url_input.text().strip())
         self.database.set_setting("ai_model", self.ai_model_input.text().strip())
@@ -3205,15 +3223,18 @@ class MainWindow(QMainWindow):
         self.start_ai_analysis(paths)
 
     def start_ai_analysis(self, paths: list[Path]) -> None:
-        base_url = self.ai_base_url_input.text().strip()
-        model = self.ai_model_input.text().strip()
-        api_key = self.ai_key_input.text().strip()
-        if not base_url or not model or not api_key:
-            QMessageBox.information(self, "需要 AI 配置", "请填写 API 地址、模型名和 API Key。")
+        validation = self._current_ai_config_validation()
+        if not validation.ok:
+            QMessageBox.information(self, "需要 AI 配置", format_ai_config_validation(validation))
             return
         if self.ai_worker and self.ai_worker.isRunning():
             return
 
+        if validation.normalized_base_url != self.ai_base_url_input.text().strip():
+            self.ai_base_url_input.setText(validation.normalized_base_url)
+        base_url = validation.normalized_base_url
+        model = self.ai_model_input.text().strip()
+        api_key = self.ai_key_input.text().strip()
         self._save_ai_settings_silent()
         self.ai_analyze_button.setEnabled(False)
         self.ai_batch_button.setEnabled(False)
