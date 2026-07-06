@@ -619,8 +619,10 @@ class OperationFilterTests(unittest.TestCase):
                 rows = list(csv.reader(file))
 
         self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[1][1], "trash")
-        self.assertIn("D:\\Cache\\c.jpg", rows[1][2])
+        self.assertEqual(rows[1][1], "不可撤销")
+        self.assertEqual(rows[1][2], "回收站")
+        self.assertEqual(rows[1][3], "trash")
+        self.assertIn("D:\\Cache\\c.jpg", rows[1][4])
 
 
 class MainWindowStartupTests(unittest.TestCase):
@@ -1348,10 +1350,27 @@ class DuplicateScannerTests(unittest.TestCase):
             with target.open("r", encoding="utf-8-sig", newline="") as file:
                 rows = list(csv.reader(file))
 
-        self.assertEqual(rows[0], ["id", "created_at", "root_paths", "group_count", "file_count", "duplicate_bytes", "reclaimable_bytes"])
+        self.assertEqual(
+            rows[0],
+            [
+                "id",
+                "created_time",
+                "created_at",
+                "root_paths",
+                "group_count",
+                "file_count",
+                "duplicate_size",
+                "duplicate_bytes",
+                "reclaimable_size",
+                "reclaimable_bytes",
+            ],
+        )
         self.assertEqual(rows[1][0], "7")
-        self.assertIn("D:\\Photos", rows[1][2])
-        self.assertIn("E:\\Backup", rows[1][2])
+        self.assertTrue(rows[1][1])
+        self.assertIn("D:\\Photos", rows[1][3])
+        self.assertIn("E:\\Backup", rows[1][3])
+        self.assertEqual(rows[1][6], "1.2 KB")
+        self.assertEqual(rows[1][8], "800 B")
 
     def test_delete_single_scan_session_keeps_other_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1638,7 +1657,10 @@ class DuplicateScannerTests(unittest.TestCase):
 
         self.assertIsNotNone(operation)
         self.assertEqual(operation.action, "trash")
-        self.assertEqual(rows[1][1], "trash")
+        self.assertEqual(rows[0][:4], ["id", "status", "action_label", "action"])
+        self.assertEqual(rows[1][1], "不可撤销")
+        self.assertEqual(rows[1][2], "回收站")
+        self.assertEqual(rows[1][3], "trash")
 
     def test_ai_response_parsing_and_storage(self) -> None:
         raw = json.dumps(

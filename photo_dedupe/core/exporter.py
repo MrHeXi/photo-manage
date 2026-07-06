@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import html
+from datetime import datetime
 from pathlib import Path
 
 from photo_dedupe.core.models import AiAnalysisRecord, DuplicateGroup, FileRecord, OperationRecord, ScanSessionSummaryRecord
+from photo_dedupe.core.operation_filters import operation_action_label, operation_status_label
 
 
 def _format_size(size: int) -> str:
@@ -23,6 +25,12 @@ def _group_kind_label(kind: str) -> str:
         "similar": "相似图片",
         "video": "相似视频",
     }.get(kind, kind)
+
+
+def _format_timestamp(timestamp: float | None) -> str:
+    if timestamp is None:
+        return ""
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def export_files_csv(records: list[FileRecord], target: Path) -> None:
@@ -49,15 +57,32 @@ def export_operations_csv(records: list[OperationRecord], target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.writer(file)
-        writer.writerow(["id", "action", "source_path", "target_path", "created_at", "undone_at"])
+        writer.writerow(
+            [
+                "id",
+                "status",
+                "action_label",
+                "action",
+                "source_path",
+                "target_path",
+                "created_time",
+                "created_at",
+                "undone_time",
+                "undone_at",
+            ]
+        )
         for record in records:
             writer.writerow(
                 [
                     record.id,
+                    operation_status_label(record),
+                    operation_action_label(record),
                     record.action,
                     str(record.source_path),
                     str(record.target_path),
+                    _format_timestamp(record.created_at),
                     record.created_at,
+                    _format_timestamp(record.undone_at),
                     record.undone_at if record.undone_at is not None else "",
                 ]
             )
@@ -85,16 +110,32 @@ def export_scan_sessions_csv(records: list[ScanSessionSummaryRecord], target: Pa
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.writer(file)
-        writer.writerow(["id", "created_at", "root_paths", "group_count", "file_count", "duplicate_bytes", "reclaimable_bytes"])
+        writer.writerow(
+            [
+                "id",
+                "created_time",
+                "created_at",
+                "root_paths",
+                "group_count",
+                "file_count",
+                "duplicate_size",
+                "duplicate_bytes",
+                "reclaimable_size",
+                "reclaimable_bytes",
+            ]
+        )
         for record in records:
             writer.writerow(
                 [
                     record.id,
+                    _format_timestamp(record.created_at),
                     record.created_at,
                     " | ".join(str(path) for path in record.root_paths),
                     record.group_count,
                     record.file_count,
+                    _format_size(record.duplicate_bytes),
                     record.duplicate_bytes,
+                    _format_size(record.reclaimable_bytes),
                     record.reclaimable_bytes,
                 ]
             )
