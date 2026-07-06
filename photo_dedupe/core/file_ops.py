@@ -1,11 +1,39 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from photo_dedupe.core.models import FileRecord
 from photo_dedupe.core.models import OperationRecord
 from photo_dedupe.core.storage import AppDatabase
+
+
+@dataclass(frozen=True)
+class UndoMoveItemResult:
+    operation_id: int
+    source_path: Path
+    target_path: Path
+    restored_path: Path | None
+    status: str
+    message: str
+
+
+@dataclass(frozen=True)
+class UndoMoveBatchResult:
+    items: list[UndoMoveItemResult]
+
+    @property
+    def completed_count(self) -> int:
+        return sum(1 for item in self.items if item.status == "restored")
+
+    @property
+    def failed_count(self) -> int:
+        return sum(1 for item in self.items if item.status == "failed")
+
+    @property
+    def skipped_count(self) -> int:
+        return sum(1 for item in self.items if item.status == "skipped")
 
 
 def unique_target_path(directory: Path, filename: str) -> Path:
@@ -78,3 +106,57 @@ def undo_move(operation: OperationRecord, database: AppDatabase | None = None) -
     if database:
         database.mark_operation_undone(operation.id)
     return restore_path
+
+
+def undo_move_operations(operations: list[OperationRecord], database: AppDatabase | None = None) -> UndoMoveBatchResult:
+    results: list[UndoMoveItemResult] = []
+    for operation in operations:
+        if operation.action != "move":
+            results.append(
+                UndoMoveItemResult(
+                    operation_id=operation.id,
+                    source_path=operation.source_path,
+                    target_path=operation.target_path,
+                    restored_path=None,
+                    status="skipped",
+                    message="不是普通移动记录",
+                )
+            )
+            continue
+        if operation.is_undone:
+            results.append(
+                UndoMoveItemResult(
+                    operation_id=operation.id,
+                    source_path=operation.source_path,
+                    target_path=operation.target_path,
+                    restored_path=None,
+                    status="skipped",
+                    message="已经撤销",
+                )
+            )
+            continue
+        try:
+            restored_path = undo_move(operation, database)
+        except Exception as exc:
+            results.append(
+                UndoMoveItemResult(
+                    operation_id=operation.id,
+                    source_path=operation.source_path,
+                    target_path=operation.target_path,
+                    restored_path=None,
+                    status="failed",
+                    message=str(exc),
+                )
+            )
+            continue
+        results.append(
+            UndoMoveItemResult(
+                operation_id=operation.id,
+                source_path=operation.source_path,
+                target_path=operation.target_path,
+                restored_path=restored_path,
+                status="restored",
+                message="已恢复",
+            )
+        )
+    return UndoMoveBatchResult(results)

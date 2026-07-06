@@ -57,7 +57,7 @@ from photo_dedupe.core.diagnostics import (
 from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv, export_scan_sessions_csv
 from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
-from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
+from photo_dedupe.core.file_ops import move_records, trash_records, undo_move, undo_move_operations
 from photo_dedupe.core.file_reveal import operation_reveal_path, reveal_in_file_manager
 from photo_dedupe.core.group_summary import DuplicateGroupSummary, summarize_duplicate_group
 from photo_dedupe.core.hashers import is_image, is_video
@@ -742,6 +742,8 @@ class MainWindow(QMainWindow):
         refresh_ops_button.clicked.connect(self.refresh_operations)
         undo_button = QPushButton("撤销选中移动")
         undo_button.clicked.connect(self.undo_selected_operation)
+        undo_filtered_button = QPushButton("撤销当前筛选移动")
+        undo_filtered_button.clicked.connect(self.undo_filtered_operations)
         reveal_current_op_button = QPushButton("打开当前位置")
         reveal_current_op_button.clicked.connect(lambda _checked=False: self.reveal_selected_operation("current"))
         reveal_original_op_button = QPushButton("打开原目录")
@@ -1028,6 +1030,7 @@ class MainWindow(QMainWindow):
         ops_buttons = QHBoxLayout()
         ops_buttons.addWidget(refresh_ops_button)
         ops_buttons.addWidget(undo_button)
+        ops_buttons.addWidget(undo_filtered_button)
         ops_buttons.addWidget(reveal_current_op_button)
         ops_buttons.addWidget(reveal_original_op_button)
         ops_buttons.addWidget(export_ops_button)
@@ -3281,6 +3284,54 @@ class MainWindow(QMainWindow):
             return
 
         QMessageBox.information(self, "撤销完成", f"文件已恢复到：\n{restored}")
+        self.refresh_operations()
+
+    def undo_filtered_operations(self) -> None:
+        _all_operations, visible_operations = self._filtered_operations()
+        candidates = [
+            operation
+            for operation in visible_operations
+            if operation.action == "move" and not operation.is_undone
+        ]
+        if not candidates:
+            QMessageBox.information(
+                self,
+                "没有可撤销记录",
+                "当前筛选结果中没有可撤销的普通移动记录。回收站记录需要在 Windows 回收站中恢复。",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认批量撤销",
+            f"将撤销当前筛选结果中的 {len(candidates)} 条普通移动记录。\n"
+            "已经撤销、回收站和不在当前筛选结果中的记录不会处理。是否继续？",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        result = undo_move_operations(candidates, self.database)
+        lines = [
+            "批量撤销完成",
+            f"计划撤销：{len(candidates)} 条",
+            f"成功恢复：{result.completed_count} 条",
+            f"跳过：{result.skipped_count} 条",
+            f"失败：{result.failed_count} 条",
+        ]
+        failed_items = [item for item in result.items if item.status == "failed"]
+        if failed_items:
+            lines.append("")
+            lines.append("失败明细：")
+            for item in failed_items[:8]:
+                lines.append(f"- {item.source_path}: {item.message}")
+            if len(failed_items) > 8:
+                lines.append(f"- 另有 {len(failed_items) - 8} 条失败记录未显示")
+        message = "\n".join(lines)
+        self.status_label.setText(f"批量撤销完成：成功 {result.completed_count} 条，失败 {result.failed_count} 条")
+        if result.failed_count:
+            QMessageBox.warning(self, "批量撤销完成", message)
+        else:
+            QMessageBox.information(self, "批量撤销完成", message)
         self.refresh_operations()
 
     def reveal_selected_operation(self, location: str) -> None:

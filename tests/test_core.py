@@ -32,7 +32,7 @@ from photo_dedupe.core.exporter import (
     export_scan_sessions_csv,
 )
 from photo_dedupe.core.file_details import inspect_file_preview
-from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
+from photo_dedupe.core.file_ops import move_records, undo_move, undo_move_operations, unique_target_path
 from photo_dedupe.core.file_reveal import build_reveal_command, operation_reveal_path
 from photo_dedupe.core.group_summary import summarize_duplicate_group
 from photo_dedupe.core.image_compare import build_image_compare_items
@@ -878,6 +878,38 @@ class DuplicateScannerTests(unittest.TestCase):
 
             self.assertEqual(restored, source)
             self.assertTrue(source.exists())
+            self.assertIsNotNone(refreshed)
+            self.assertTrue(refreshed.is_undone)
+
+    def test_undo_move_operations_continues_after_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_ok = root / "source-ok.txt"
+            target_ok = root / "moved" / "source-ok.txt"
+            source_missing = root / "source-missing.txt"
+            target_missing = root / "moved" / "missing.txt"
+            target_ok.parent.mkdir()
+            target_ok.write_text("content", encoding="utf-8")
+            database = AppDatabase(root / "test.db")
+            try:
+                ok_id = database.log_move(source_ok, target_ok)
+                missing_id = database.log_move(source_missing, target_missing)
+                trash_id = database.log_trash(root / "trash.txt")
+                operations = [
+                    database.get_operation(ok_id),
+                    database.get_operation(missing_id),
+                    database.get_operation(trash_id),
+                ]
+                result = undo_move_operations([operation for operation in operations if operation is not None], database)
+                refreshed = database.get_operation(ok_id)
+            finally:
+                database.close()
+
+            self.assertEqual(result.completed_count, 1)
+            self.assertEqual(result.failed_count, 1)
+            self.assertEqual(result.skipped_count, 1)
+            self.assertTrue(source_ok.exists())
+            self.assertFalse(target_ok.exists())
             self.assertIsNotNone(refreshed)
             self.assertTrue(refreshed.is_undone)
 
