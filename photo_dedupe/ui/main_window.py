@@ -882,6 +882,11 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.progress)
         left_layout.addWidget(self.status_label)
         left_layout.addStretch(1)
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("SidebarScroll")
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left)
+        left_scroll.setMinimumWidth(260)
 
         self.group_mode_combo.addItems(["重复分组", "磁盘目录"])
         self.group_mode_combo.currentIndexChanged.connect(self.on_group_mode_changed)
@@ -1271,7 +1276,7 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter()
         splitter.setObjectName("MainSplitter")
-        splitter.addWidget(left)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(groups_panel)
         splitter.addWidget(tabs)
         splitter.setSizes([270, 310, 700])
@@ -1302,6 +1307,13 @@ class MainWindow(QMainWindow):
             }
             #Sidebar {
                 background: #fbfbfc;
+            }
+            #SidebarScroll {
+                border: none;
+                background: transparent;
+            }
+            #SidebarScroll > QWidget {
+                background: transparent;
             }
             #MainSplitter::handle {
                 background: transparent;

@@ -705,7 +705,7 @@ class OperationFilterTests(unittest.TestCase):
 class MainWindowStartupTests(unittest.TestCase):
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication, QLineEdit
+        from PySide6.QtWidgets import QApplication, QLineEdit, QScrollArea
         from photo_dedupe.ui.main_window import MainWindow
 
         app = QApplication.instance() or QApplication([])
@@ -723,6 +723,7 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertFalse(window.ai_show_key_checkbox.isChecked())
                 self.assertEqual(window.health_data_dir_button.text(), "打开数据目录")
                 self.assertEqual(window.health_log_dir_button.text(), "打开日志目录")
+                self.assertIsNotNone(window.findChild(QScrollArea, "SidebarScroll"))
                 window.refresh_onboarding()
                 self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
                 self.assertIn("选择扫描目录", window.onboarding_summary_label.text())
