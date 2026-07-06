@@ -862,6 +862,7 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertIn("添加", window.onboarding_guidance_label.text())
                 guide_buttons = {button.text() for button in window.findChildren(QPushButton)}
                 self.assertIn("创建演示样例", guide_buttons)
+                self.assertIn("打开报告目录", guide_buttons)
                 window.refresh_group_list()
                 self.assertIn("创建演示样例", window.group_status_label.text())
                 self.assertIn("添加扫描目录", window.group_status_label.text())

@@ -831,6 +831,8 @@ class MainWindow(QMainWindow):
         reveal_original_op_button.clicked.connect(lambda _checked=False: self.reveal_selected_operation("original"))
         export_ops_button = QPushButton("导出操作记录")
         export_ops_button.clicked.connect(self.export_operations)
+        open_report_dir_ops_button = QPushButton("打开报告目录")
+        open_report_dir_ops_button.clicked.connect(self.open_report_directory)
         self.operation_action_filter_combo.addItems([ACTION_ALL, ACTION_MOVE, ACTION_TRASH])
         self.operation_action_filter_combo.currentIndexChanged.connect(self.refresh_operations)
         self.operation_status_filter_combo.addItems([STATUS_ALL, STATUS_CAN_UNDO, STATUS_UNDONE, STATUS_NOT_UNDOABLE])
@@ -1123,6 +1125,7 @@ class MainWindow(QMainWindow):
         ops_buttons.addWidget(reveal_current_op_button)
         ops_buttons.addWidget(reveal_original_op_button)
         ops_buttons.addWidget(export_ops_button)
+        ops_buttons.addWidget(open_report_dir_ops_button)
 
         ops_filter_row = QHBoxLayout()
         ops_filter_row.addWidget(self.operation_action_filter_combo)
