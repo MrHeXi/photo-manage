@@ -5,7 +5,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from photo_dedupe.core.release_manifest import MANIFEST_FILENAME
+from photo_dedupe.core.release_manifest import MANIFEST_FILENAME, sha256_file
 
 
 STATUS_OK = "通过"
@@ -46,6 +46,7 @@ def run_release_check(project_root: Path | None = None) -> ReleaseCheckReport:
     _check_dist(root, items)
     _check_release_manifest(root, items)
     _check_release_zip(root, items)
+    _check_release_checksum(root, items)
 
     return ReleaseCheckReport(tuple(items))
 
@@ -135,6 +136,8 @@ def _check_scripts(root: Path, items: list[ReleaseCheckItem]) -> None:
         problems.append("package.ps1 未复制 CHANGELOG")
     if "Compress-Archive" not in package and "CreateFromDirectory" not in package:
         problems.append("package.ps1 未生成 zip")
+    if "Get-FileHash" not in package or ".sha256" not in package:
+        problems.append("package.ps1 未生成 zip SHA-256 校验文件")
     if "--write-release-manifest" not in package:
         problems.append("package.ps1 未生成发布 Manifest")
     if "--release-check" not in package:
@@ -201,6 +204,36 @@ def _check_release_zip(root: Path, items: list[ReleaseCheckItem]) -> None:
         items.append(ReleaseCheckItem("发布 zip", STATUS_ERROR, "zip 缺少：" + "、".join(missing)))
     else:
         items.append(ReleaseCheckItem("发布 zip", STATUS_OK, str(zip_path)))
+
+
+def _check_release_checksum(root: Path, items: list[ReleaseCheckItem]) -> None:
+    version = _current_version(root)
+    if not version:
+        items.append(ReleaseCheckItem("发布校验", STATUS_WARN, "无法确认版本号，跳过校验文件检查"))
+        return
+    zip_path = root / "release" / f"PhotoManageGPT-v{version}-win64.zip"
+    checksum_path = Path(str(zip_path) + ".sha256")
+    if not zip_path.exists() or zip_path.stat().st_size == 0:
+        items.append(ReleaseCheckItem("发布校验", STATUS_WARN, "尚未生成发布 zip，跳过校验文件检查"))
+        return
+    if not checksum_path.exists() or checksum_path.stat().st_size == 0:
+        items.append(ReleaseCheckItem("发布校验", STATUS_ERROR, f"缺少校验文件：{checksum_path.name}"))
+        return
+
+    content = checksum_path.read_text(encoding="ascii", errors="ignore").strip()
+    parts = content.split()
+    expected_name = zip_path.name
+    if len(parts) < 2:
+        items.append(ReleaseCheckItem("发布校验", STATUS_ERROR, "校验文件格式应为：<sha256>  <zip 文件名>"))
+        return
+    recorded_hash, recorded_name = parts[0].lower(), parts[-1]
+    actual_hash = sha256_file(zip_path)
+    if recorded_name != expected_name:
+        items.append(ReleaseCheckItem("发布校验", STATUS_ERROR, f"校验文件名不匹配：{recorded_name}"))
+    elif recorded_hash != actual_hash:
+        items.append(ReleaseCheckItem("发布校验", STATUS_ERROR, "SHA-256 与当前 zip 不一致"))
+    else:
+        items.append(ReleaseCheckItem("发布校验", STATUS_OK, checksum_path.name))
 
 
 def _check_release_manifest(root: Path, items: list[ReleaseCheckItem]) -> None:

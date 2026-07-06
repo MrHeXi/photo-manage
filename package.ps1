@@ -31,6 +31,7 @@ function Remove-PathWithRetry {
 
 Remove-PathWithRetry $releaseDir
 Remove-PathWithRetry $zipPath
+Remove-PathWithRetry "$zipPath.sha256"
 
 .\build.ps1
 
@@ -59,6 +60,10 @@ $releaseFullPath = (Resolve-Path $releaseDir).Path
     [System.IO.Compression.CompressionLevel]::Optimal,
     $false
 )
+
+$zipHash = (Get-FileHash -Path $zipFullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$zipFileName = Split-Path -Leaf $zipPath
+Set-Content -Path "$zipPath.sha256" -Value "$zipHash  $zipFileName" -Encoding ASCII
 
 & $python -m photo_dedupe --release-check
 Write-Host "Release package: $zipPath"

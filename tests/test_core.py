@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 import csv
+import hashlib
 import json
 import logging
 import zipfile
@@ -98,7 +99,7 @@ from photo_dedupe.core.processing_risk import (
     build_processing_risk_summary,
     format_processing_confirmation,
 )
-from photo_dedupe.core.release_check import STATUS_ERROR, STATUS_WARN, format_release_check_report, run_release_check
+from photo_dedupe.core.release_check import STATUS_ERROR, STATUS_OK, STATUS_WARN, format_release_check_report, run_release_check
 from photo_dedupe.core.release_manifest import MANIFEST_FILENAME, build_release_manifest, write_release_manifest
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import build_processing_plan, choose_keep_records, describe_keep_reasons
@@ -209,6 +210,8 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("photo_dedupe.__version__", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
         self.assertIn("CHANGELOG.md", content)
+        self.assertIn("Get-FileHash", content)
+        self.assertIn(".sha256", content)
         self.assertIn("--release-check", content)
         self.assertIn("--write-release-manifest", content)
         self.assertIn("--startup-smoke-test", content)
@@ -220,6 +223,7 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("Windows 推广版", content)
         self.assertIn("默认不做永久删除", content)
         self.assertIn("启动烟测", content)
+        self.assertIn(".zip.sha256", content)
 
     def test_build_script_runs_release_check(self) -> None:
         script = Path(__file__).resolve().parents[1] / "build.ps1"
@@ -276,6 +280,28 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertTrue(any(item.name == "发布 zip" and item.status == STATUS_ERROR for item in report.items))
 
+    def test_release_check_validates_zip_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._create_release_tree(Path(directory))
+            zip_path = self._create_release_zip(root)
+            self._write_release_checksum(zip_path)
+
+            report = run_release_check(root)
+
+        self.assertTrue(report.passed, format_release_check_report(report))
+        self.assertTrue(any(item.name == "发布校验" and item.status == STATUS_OK for item in report.items))
+
+    def test_release_check_fails_on_bad_zip_checksum(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._create_release_tree(Path(directory))
+            zip_path = self._create_release_zip(root)
+            Path(str(zip_path) + ".sha256").write_text(f"0  {zip_path.name}\n", encoding="ascii")
+
+            report = run_release_check(root)
+
+        self.assertFalse(report.passed)
+        self.assertTrue(any(item.name == "发布校验" and item.status == STATUS_ERROR for item in report.items))
+
     def test_release_check_fails_without_exe(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self._create_release_tree(Path(directory))
@@ -299,7 +325,7 @@ class BrandingAssetTests(unittest.TestCase):
         (root / "CHANGELOG.md").write_text("Windows 推广版\n默认不做永久删除\n启动烟测\n", encoding="utf-8")
         (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
         (root / "package.ps1").write_text(
-            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCHANGELOG.md\nCreateFromDirectory\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
+            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCHANGELOG.md\nCreateFromDirectory\nGet-FileHash\n.sha256\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
             encoding="utf-8",
         )
         (root / "run-safe.ps1").write_text("--safe-mode\n", encoding="utf-8")
@@ -333,6 +359,12 @@ class BrandingAssetTests(unittest.TestCase):
                     continue
                 archive.write(path, path.relative_to(release_dir).as_posix())
         return zip_path
+
+    def _write_release_checksum(self, zip_path: Path) -> Path:
+        digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        target = Path(str(zip_path) + ".sha256")
+        target.write_text(f"{digest}  {zip_path.name}\n", encoding="ascii")
+        return target
 
 
 class DiagnosticsTests(unittest.TestCase):
