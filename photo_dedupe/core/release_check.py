@@ -144,12 +144,20 @@ def _check_scripts(root: Path, items: list[ReleaseCheckItem]) -> None:
 
 def _check_readme(root: Path, items: list[ReleaseCheckItem]) -> None:
     readme = (root / "README.md").read_text(encoding="utf-8") if (root / "README.md").exists() else ""
-    required_phrases = ["安全模式", "打包 EXE", "发布自检", "默认不做永久删除"]
+    required_phrases = [
+        "安全模式",
+        "打包 EXE",
+        "发布自检",
+        "默认不做永久删除",
+        "处理结果报告",
+        "操作记录",
+        "RELEASE-MANIFEST.json",
+    ]
     missing = [phrase for phrase in required_phrases if phrase not in readme]
     if missing:
         items.append(ReleaseCheckItem("中文使用手册", STATUS_WARN, "建议补充：" + "、".join(missing)))
     else:
-        items.append(ReleaseCheckItem("中文使用手册", STATUS_OK, "已包含安全、打包和发布说明"))
+        items.append(ReleaseCheckItem("中文使用手册", STATUS_OK, "已包含安全、恢复、打包和发布说明"))
 
 
 def _check_dist(root: Path, items: list[ReleaseCheckItem]) -> None:

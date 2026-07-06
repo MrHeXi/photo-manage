@@ -272,7 +272,7 @@ class BrandingAssetTests(unittest.TestCase):
         release_dir = root / "release" / "PhotoManageGPT-v0.1.0-win64"
         release_dir.mkdir(parents=True)
         (root / "README.md").write_text(
-            "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n",
+            "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n处理结果报告\n操作记录\nRELEASE-MANIFEST.json\n",
             encoding="utf-8",
         )
         (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
