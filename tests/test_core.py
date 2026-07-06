@@ -642,6 +642,8 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertEqual(window.ai_check_button.text(), "检查 AI 配置")
                 self.assertEqual(window.ai_key_input.echoMode(), QLineEdit.EchoMode.Password)
                 self.assertFalse(window.ai_show_key_checkbox.isChecked())
+                self.assertEqual(window.health_data_dir_button.text(), "打开数据目录")
+                self.assertEqual(window.health_log_dir_button.text(), "打开日志目录")
                 window.refresh_onboarding()
                 self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
                 self.assertIn("选择扫描目录", window.onboarding_summary_label.text())

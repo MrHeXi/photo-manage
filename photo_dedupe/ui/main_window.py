@@ -395,6 +395,8 @@ class MainWindow(QMainWindow):
         self.operation_summary_label = QLabel("")
         self.session_summary_label = QLabel("")
         self.health_summary_label = QLabel("")
+        self.health_data_dir_button = QPushButton("打开数据目录")
+        self.health_log_dir_button = QPushButton("打开日志目录")
         self.organize_help_label = QLabel("")
         self.group_detail_summary_label = QLabel("")
         self.retention_hint_label = QLabel("勾选的文件会保留在原位置；保护目录内文件不会被批量移动或回收。")
@@ -521,6 +523,26 @@ class MainWindow(QMainWindow):
                 table_item = status_cell if column == 1 else QTableWidgetItem(value)
                 self.health_table.setItem(row, column, table_item)
         self.health_table.resizeRowsToContents()
+
+    def open_data_directory(self) -> None:
+        target = self.database.path.parent
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            reveal_in_file_manager(target)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开数据目录", str(exc))
+            return
+        self.status_label.setText(f"已打开数据目录：{target}")
+
+    def open_log_directory(self) -> None:
+        target = self.health_log_path.parent
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            reveal_in_file_manager(target)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开日志目录", str(exc))
+            return
+        self.status_label.setText(f"已打开日志目录：{target}")
 
     def export_health_report(self) -> None:
         target, _ = QFileDialog.getSaveFileName(self, "导出诊断报告", "photo-manage-diagnostics.txt", "Text Files (*.txt)")
@@ -731,6 +753,8 @@ class MainWindow(QMainWindow):
         refresh_health_button.clicked.connect(self.refresh_health_diagnostics)
         export_health_button = QPushButton("导出诊断报告")
         export_health_button.clicked.connect(self.export_health_report)
+        self.health_data_dir_button.clicked.connect(self.open_data_directory)
+        self.health_log_dir_button.clicked.connect(self.open_log_directory)
         save_profile_button = QPushButton("保存方案")
         save_profile_button.clicked.connect(self.save_current_profile)
         load_profile_button = QPushButton("加载方案")
@@ -1085,6 +1109,8 @@ class MainWindow(QMainWindow):
         health_layout.addWidget(self.health_table)
         health_buttons = QHBoxLayout()
         health_buttons.addWidget(refresh_health_button)
+        health_buttons.addWidget(self.health_data_dir_button)
+        health_buttons.addWidget(self.health_log_dir_button)
         health_buttons.addWidget(export_health_button)
         health_layout.addLayout(health_buttons)
 
