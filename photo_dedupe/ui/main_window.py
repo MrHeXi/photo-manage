@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -48,8 +49,8 @@ from photo_dedupe import __version__
 from photo_dedupe.core.ai_client import AiConfig, analyze_image, format_ai_config_validation, validate_ai_config
 from photo_dedupe.core.diagnostics import (
     build_health_items,
+    build_support_diagnostic_report,
     default_log_path,
-    format_health_report,
     install_exception_logging,
     setup_logging,
 )
@@ -397,6 +398,7 @@ class MainWindow(QMainWindow):
         self.health_summary_label = QLabel("")
         self.health_data_dir_button = QPushButton("打开数据目录")
         self.health_log_dir_button = QPushButton("打开日志目录")
+        self.health_diagnostic_text = QPlainTextEdit()
         self.organize_help_label = QLabel("")
         self.group_detail_summary_label = QLabel("")
         self.retention_hint_label = QLabel("勾选的文件会保留在原位置；保护目录内文件不会被批量移动或回收。")
@@ -505,11 +507,24 @@ class MainWindow(QMainWindow):
             total_groups=self.restored_total_groups,
         )
 
+    def _current_support_report(self) -> str:
+        return build_support_diagnostic_report(
+            app_version=APP_VERSION,
+            database_path=self.database.path,
+            log_path=self.health_log_path,
+            ffmpeg_available=video_hash_available(),
+            history_state=self.history_state,
+            safe_mode=self.safe_mode,
+            loaded_groups=self.restored_loaded_groups,
+            total_groups=self.restored_total_groups,
+        )
+
     def refresh_health_diagnostics(self) -> None:
         items = self._current_health_items()
         self.health_summary_label.setText(
-            f"启动日志：{self.health_log_path}\n遇到启动失败、后台残留或历史加载异常时，可先查看这里的诊断信息。"
+            f"启动日志：{self.health_log_path}\n遇到启动失败、后台残留或历史加载异常时，可复制下面的诊断信息用于反馈。"
         )
+        self.health_diagnostic_text.setPlainText(self._current_support_report())
         self.health_table.setRowCount(len(items))
         for row, item in enumerate(items):
             status_cell = QTableWidgetItem(item.status)
@@ -544,12 +559,19 @@ class MainWindow(QMainWindow):
             return
         self.status_label.setText(f"已打开日志目录：{target}")
 
+    def copy_health_diagnostics(self) -> None:
+        report = self._current_support_report()
+        QApplication.clipboard().setText(report)
+        self.health_diagnostic_text.setPlainText(report)
+        self.status_label.setText("已复制诊断信息")
+        QMessageBox.information(self, "已复制", "诊断信息已复制到剪贴板。")
+
     def export_health_report(self) -> None:
         target, _ = QFileDialog.getSaveFileName(self, "导出诊断报告", "photo-manage-diagnostics.txt", "Text Files (*.txt)")
         if not target:
             return
         try:
-            Path(target).write_text(format_health_report(self._current_health_items()), encoding="utf-8")
+            Path(target).write_text(self._current_support_report(), encoding="utf-8")
         except Exception as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
             return
@@ -753,6 +775,8 @@ class MainWindow(QMainWindow):
         refresh_health_button.clicked.connect(self.refresh_health_diagnostics)
         export_health_button = QPushButton("导出诊断报告")
         export_health_button.clicked.connect(self.export_health_report)
+        copy_health_button = QPushButton("复制诊断信息")
+        copy_health_button.clicked.connect(self.copy_health_diagnostics)
         self.health_data_dir_button.clicked.connect(self.open_data_directory)
         self.health_log_dir_button.clicked.connect(self.open_log_directory)
         save_profile_button = QPushButton("保存方案")
@@ -1098,6 +1122,9 @@ class MainWindow(QMainWindow):
         self.health_table.setAlternatingRowColors(True)
         self.health_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.health_table.verticalHeader().setDefaultSectionSize(30)
+        self.health_diagnostic_text.setReadOnly(True)
+        self.health_diagnostic_text.setMinimumHeight(180)
+        self.health_diagnostic_text.setPlaceholderText("这里会生成可复制的版本、路径和运行环境诊断信息。")
 
         health_panel = QWidget()
         health_panel.setObjectName("ContentPanel")
@@ -1107,10 +1134,13 @@ class MainWindow(QMainWindow):
         self.health_summary_label.setWordWrap(True)
         health_layout.addWidget(self.health_summary_label)
         health_layout.addWidget(self.health_table)
+        health_layout.addWidget(QLabel("可复制诊断信息"))
+        health_layout.addWidget(self.health_diagnostic_text)
         health_buttons = QHBoxLayout()
         health_buttons.addWidget(refresh_health_button)
         health_buttons.addWidget(self.health_data_dir_button)
         health_buttons.addWidget(self.health_log_dir_button)
+        health_buttons.addWidget(copy_health_button)
         health_buttons.addWidget(export_health_button)
         health_layout.addLayout(health_buttons)
 

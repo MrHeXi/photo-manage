@@ -150,3 +150,68 @@ def format_health_report(items: list[DiagnosticItem]) -> str:
         lines.append(f"{item.name}: {item.status}")
         lines.append(f"  {item.detail}")
     return "\n".join(lines) + "\n"
+
+
+def build_support_diagnostic_report(
+    *,
+    app_version: str,
+    database_path: Path,
+    log_path: Path,
+    ffmpeg_available: bool,
+    history_state: str,
+    safe_mode: bool = False,
+    loaded_groups: int = 0,
+    total_groups: int = 0,
+    data_dir: Path | None = None,
+    executable: str | None = None,
+    cwd: Path | None = None,
+    pid: int | None = None,
+    frozen: bool | None = None,
+) -> str:
+    resolved_data_dir = data_dir or database_path.parent
+    resolved_executable = executable or sys.executable
+    resolved_cwd = cwd or Path.cwd()
+    resolved_pid = os.getpid() if pid is None else pid
+    resolved_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    health_items = build_health_items(
+        database_path=database_path,
+        log_path=log_path,
+        ffmpeg_available=ffmpeg_available,
+        history_state=history_state,
+        app_version=app_version,
+        loaded_groups=loaded_groups,
+        total_groups=total_groups,
+    )
+    history_detail = f"{history_state}，已加载 {loaded_groups}/{total_groups} 组" if total_groups else history_state
+
+    lines = [
+        "Photo Manage GPT 诊断信息",
+        "",
+        "说明：这段信息用于反馈启动、缓存、扫描或打包问题，不包含 AI API Key。",
+        "",
+        "应用",
+        f"- 版本：{app_version}",
+        f"- 安全模式：{'是' if safe_mode else '否'}",
+        f"- 打包运行：{'是' if resolved_frozen else '否'}",
+        f"- 进程 PID：{resolved_pid}",
+        "",
+        "路径",
+        f"- 程序：{resolved_executable}",
+        f"- 当前目录：{resolved_cwd}",
+        f"- 数据目录：{resolved_data_dir}",
+        f"- 数据库：{database_path}",
+        f"- 日志：{log_path}",
+        "",
+        "环境",
+        f"- Python：{sys.version.split()[0]}",
+        f"- 系统：{platform.platform()}",
+        f"- ffmpeg：{'已检测到' if ffmpeg_available else '未检测到'}",
+        "",
+        "缓存",
+        f"- 历史状态：{history_detail}",
+        "",
+        "健康检查",
+    ]
+    for item in health_items:
+        lines.append(f"- {item.name}：{item.status}；{item.detail}")
+    return "\n".join(lines) + "\n"

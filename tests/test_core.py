@@ -14,7 +14,14 @@ from PySide6.QtCore import QLockFile
 
 from photo_dedupe import __version__
 from photo_dedupe.core.ai_client import AiConfig, format_ai_config_validation, parse_chat_content, parse_score, validate_ai_config
-from photo_dedupe.core.diagnostics import DiagnosticItem, build_health_items, default_log_path, format_health_report, setup_logging
+from photo_dedupe.core.diagnostics import (
+    DiagnosticItem,
+    build_health_items,
+    build_support_diagnostic_report,
+    default_log_path,
+    format_health_report,
+    setup_logging,
+)
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
 from photo_dedupe.core.exporter import (
     build_duplicate_report_html,
@@ -376,6 +383,41 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("Photo Manage GPT 健康诊断报告", report)
         self.assertIn("应用版本: 正常", report)
         self.assertIn("C:/logs/app.log", report)
+
+    def test_support_diagnostic_report_includes_runtime_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database_path = root / "photo_manage.db"
+            log_path = root / "logs" / "app.log"
+            database_path.write_text("db", encoding="utf-8")
+            log_path.parent.mkdir()
+            log_path.write_text("log", encoding="utf-8")
+
+            report = build_support_diagnostic_report(
+                app_version="0.1.0",
+                database_path=database_path,
+                log_path=log_path,
+                ffmpeg_available=True,
+                history_state="已恢复历史结果",
+                safe_mode=True,
+                loaded_groups=12,
+                total_groups=30,
+                data_dir=root,
+                executable="PhotoManageGPT.exe",
+                cwd=root / "cwd",
+                pid=1234,
+                frozen=True,
+            )
+
+        self.assertIn("Photo Manage GPT 诊断信息", report)
+        self.assertIn("版本：0.1.0", report)
+        self.assertIn("安全模式：是", report)
+        self.assertIn("打包运行：是", report)
+        self.assertIn("进程 PID：1234", report)
+        self.assertIn("PhotoManageGPT.exe", report)
+        self.assertIn("已加载 12/30 组", report)
+        self.assertIn("ffmpeg：已检测到", report)
+        self.assertIn("不包含 AI API Key", report)
 
 
 class ProgressStatusTests(unittest.TestCase):
