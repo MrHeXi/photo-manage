@@ -94,6 +94,7 @@ from photo_dedupe.core.operation_report import (
     build_organize_result_report,
     build_processing_result_report,
     format_operation_result_report,
+    save_operation_result_report,
 )
 from photo_dedupe.core.operation_filters import (
     ACTION_ALL,
@@ -425,6 +426,7 @@ class MainWindow(QMainWindow):
         self.health_summary_label = QLabel("")
         self.health_data_dir_button = QPushButton("打开数据目录")
         self.health_log_dir_button = QPushButton("打开日志目录")
+        self.health_report_dir_button = QPushButton("打开报告目录")
         self.health_diagnostic_text = QPlainTextEdit()
         self.organize_help_label = QLabel("")
         self.group_detail_summary_label = QLabel("")
@@ -610,6 +612,16 @@ class MainWindow(QMainWindow):
             return
         self.status_label.setText(f"已打开日志目录：{target}")
 
+    def open_report_directory(self) -> None:
+        target = self._operation_report_dir()
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            reveal_in_file_manager(target)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开报告目录", str(exc))
+            return
+        self.status_label.setText(f"已打开报告目录：{target}")
+
     def copy_health_diagnostics(self) -> None:
         report = self._current_support_report()
         QApplication.clipboard().setText(report)
@@ -627,6 +639,24 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "导出失败", str(exc))
             return
         QMessageBox.information(self, "导出完成", target)
+
+    def _operation_report_dir(self) -> Path:
+        return self.database.path.parent / "reports"
+
+    def _show_operation_result_report(self, title: str, report) -> None:
+        message = format_operation_result_report(report)
+        try:
+            report_path = save_operation_result_report(report, self._operation_report_dir())
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Failed to save operation report")
+            message += f"\n\n报告文件保存失败：{exc}\n可先在“操作记录”页导出 CSV 作为备份。"
+        else:
+            message += (
+                "\n\n报告文件已自动保存：\n"
+                f"{report_path}\n"
+                "以后可在“健康诊断”页打开数据目录，再进入 reports 文件夹查看。"
+            )
+        QMessageBox.information(self, title, message)
 
     def export_current_duplicate_report(self) -> None:
         groups, min_size_bytes, max_size_bytes = self._visible_groups()
@@ -832,6 +862,7 @@ class MainWindow(QMainWindow):
         copy_health_button.clicked.connect(self.copy_health_diagnostics)
         self.health_data_dir_button.clicked.connect(self.open_data_directory)
         self.health_log_dir_button.clicked.connect(self.open_log_directory)
+        self.health_report_dir_button.clicked.connect(self.open_report_directory)
         save_profile_button = QPushButton("保存方案")
         save_profile_button.clicked.connect(self.save_current_profile)
         load_profile_button = QPushButton("加载方案")
@@ -1214,6 +1245,7 @@ class MainWindow(QMainWindow):
         health_buttons.addWidget(refresh_health_button)
         health_buttons.addWidget(self.health_data_dir_button)
         health_buttons.addWidget(self.health_log_dir_button)
+        health_buttons.addWidget(self.health_report_dir_button)
         health_buttons.addWidget(copy_health_button)
         health_buttons.addWidget(export_health_button)
         health_layout.addLayout(health_buttons)
@@ -2550,7 +2582,7 @@ class MainWindow(QMainWindow):
         self.refresh_operations()
         if self.history_loaded:
             self.refresh_history()
-        QMessageBox.information(self, "整理完成", format_operation_result_report(report))
+        self._show_operation_result_report("整理完成", report)
 
     def _remove_moved_sources_from_groups(self, moved_sources: set[Path]) -> None:
         updated_groups: list[DuplicateGroup] = []
@@ -3086,6 +3118,7 @@ class MainWindow(QMainWindow):
 
         try:
             moved_targets: list[Path] = []
+            moved_pairs: list[tuple[Path, Path]] = []
             if action_label == "移动到回收站":
                 moved_paths = trash_records(selected_to_move, self.database)
                 moved_count = len(moved_paths)
@@ -3095,13 +3128,14 @@ class MainWindow(QMainWindow):
                 moved_count = len(moved)
                 moved_sources = {source for source, _target in moved}
                 moved_targets = [target for _source, target in moved]
+                moved_pairs = moved
         except Exception as exc:
             QMessageBox.critical(self, "处理失败", str(exc))
             return
 
-        report = build_processing_result_report(plan, action_label, moved_sources, moved_targets)
+        report = build_processing_result_report(plan, action_label, moved_sources, moved_targets, moved_pairs=moved_pairs)
         self.status_label.setText(f"处理完成：{moved_count}/{report.planned_count} 个文件")
-        QMessageBox.information(self, "处理完成", format_operation_result_report(report))
+        self._show_operation_result_report("处理完成", report)
         self.refresh_operations()
         self._remove_moved_sources_from_groups(moved_sources)
 

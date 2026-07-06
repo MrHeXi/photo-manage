@@ -54,7 +54,9 @@ from photo_dedupe.core.organizer import (
 from photo_dedupe.core.operation_report import (
     build_organize_result_report,
     build_processing_result_report,
+    export_operation_result_report,
     format_operation_result_report,
+    save_operation_result_report,
 )
 from photo_dedupe.core.operation_filters import (
     ACTION_MOVE,
@@ -1806,16 +1808,25 @@ class DuplicateScannerTests(unittest.TestCase):
             "移动到目标目录",
             {moved.path},
             [Path("E:/duplicates/photo-copy.jpg")],
+            moved_pairs=[(moved.path, Path("E:/duplicates/photo-copy.jpg"))],
         )
         text = format_operation_result_report(report)
+        detailed_text = format_operation_result_report(report, include_items=True, item_limit=None, generated_at=0)
 
         self.assertEqual(report.planned_count, 2)
         self.assertEqual(report.completed_count, 1)
         self.assertEqual(report.skipped_count, 1)
         self.assertEqual(report.protected_skip_count, 1)
         self.assertEqual(report.completed_bytes, 30)
+        self.assertEqual(len(report.items), 2)
+        self.assertEqual(report.items[0].status, "completed")
+        self.assertEqual(report.items[0].target_path, Path("E:/duplicates/photo-copy.jpg"))
+        self.assertEqual(report.items[1].status, "skipped")
         self.assertIn("操作记录", text)
         self.assertIn("E:\\duplicates", text)
+        self.assertIn("文件明细", detailed_text)
+        self.assertIn("D:\\demo\\temp\\photo-copy.jpg", detailed_text)
+        self.assertIn("已完成", detailed_text)
 
     def test_processing_result_report_uses_recycle_bin_restore_hint(self) -> None:
         root = Path("D:/demo")
@@ -1830,6 +1841,41 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(report.completed_count, 1)
         self.assertIn("Windows 回收站", report.restore_hint)
         self.assertIn("Windows 回收站", text)
+
+    def test_operation_result_report_can_be_exported_without_overwriting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path("D:/demo")
+            keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+            moved = FileRecord(path=root / "temp" / "photo-copy.jpg", size=30, modified_at=3.0, keep_selected=False)
+            group = DuplicateGroup(kind="exact", title="group", records=[keep, moved])
+            plan = build_processing_plan([group], set())
+            report = build_processing_result_report(
+                plan,
+                "移动到目标目录",
+                {moved.path},
+                moved_pairs=[(moved.path, Path("E:/duplicates/photo-copy.jpg"))],
+            )
+            report_dir = Path(directory) / "reports"
+            manual_target = report_dir / "manual.txt"
+
+            export_operation_result_report(report, manual_target, generated_at=0)
+            first_saved = save_operation_result_report(report, report_dir, generated_at=0)
+            second_saved = save_operation_result_report(report, report_dir, generated_at=0)
+
+            manual_text = manual_target.read_text(encoding="utf-8")
+            saved_text = first_saved.read_text(encoding="utf-8")
+            first_exists = first_saved.exists()
+            second_exists = second_saved.exists()
+            first_name = first_saved.name
+            saved_paths_differ = first_saved != second_saved
+
+        self.assertTrue(first_exists)
+        self.assertTrue(second_exists)
+        self.assertTrue(saved_paths_differ)
+        self.assertIn("-dedupe-operation-report", first_name)
+        self.assertIn("生成时间：", manual_text)
+        self.assertIn("文件明细", saved_text)
+        self.assertIn("E:\\duplicates\\photo-copy.jpg", saved_text)
 
     def test_organize_result_report_summarizes_move_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1858,6 +1904,8 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(report.completed_bytes, 5)
         self.assertIn("整理执行报告", text)
         self.assertIn("操作记录", text)
+        self.assertEqual(report.items[0].target_path, target)
+        self.assertIn("普通移动", report.restore_hint)
 
     def test_trash_operation_is_logged_and_exported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
