@@ -1388,6 +1388,15 @@ class MainWindow(QMainWindow):
             help_menu.addAction(action)
         help_menu.addSeparator()
 
+        guide_action = QAction("打开新手向导", self)
+        guide_action.triggered.connect(lambda _checked=False: self.switch_to_tab("新手向导"))
+        help_menu.addAction(guide_action)
+
+        demo_action = QAction("创建演示样例", self)
+        demo_action.triggered.connect(self.create_demo_workspace)
+        help_menu.addAction(demo_action)
+        help_menu.addSeparator()
+
         health_action = QAction("打开健康诊断", self)
         health_action.triggered.connect(lambda _checked=False: self.switch_to_tab("健康诊断"))
         help_menu.addAction(health_action)

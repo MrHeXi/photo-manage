@@ -850,6 +850,8 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertIsNotNone(help_menu)
                 help_actions = [action.text() for action in help_menu.actions()]
                 self.assertIn("打开三分钟上手", help_actions)
+                self.assertIn("打开新手向导", help_actions)
+                self.assertIn("创建演示样例", help_actions)
                 self.assertIn("打开健康诊断", help_actions)
                 self.assertEqual(find_support_document("QUICKSTART.md", [Path(directory)]), quickstart)
                 self.assertTrue(window.switch_to_tab("健康诊断"))
