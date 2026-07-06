@@ -63,6 +63,7 @@ def format_release_check_report(report: ReleaseCheckReport) -> str:
 def _check_required_files(root: Path, items: list[ReleaseCheckItem]) -> None:
     required = [
         "README.md",
+        "QUICKSTART.md",
         "CHANGELOG.md",
         "build.ps1",
         "package.ps1",
@@ -132,6 +133,8 @@ def _check_scripts(root: Path, items: list[ReleaseCheckItem]) -> None:
         problems.append("package.ps1 未生成安全模式启动器")
     if "README.md" not in package:
         problems.append("package.ps1 未复制 README")
+    if "QUICKSTART.md" not in package:
+        problems.append("package.ps1 未复制 QUICKSTART")
     if "CHANGELOG.md" not in package:
         problems.append("package.ps1 未复制 CHANGELOG")
     if "Compress-Archive" not in package and "CreateFromDirectory" not in package:
@@ -187,7 +190,7 @@ def _check_release_zip(root: Path, items: list[ReleaseCheckItem]) -> None:
         items.append(ReleaseCheckItem("发布 zip", STATUS_WARN, "尚未生成发布 zip，可运行 .\\package.ps1"))
         return
 
-    required = {"PhotoManageGPT.exe", "README.md", "CHANGELOG.md", "PhotoManageGPT-safe-mode.cmd", MANIFEST_FILENAME}
+    required = {"PhotoManageGPT.exe", "README.md", "QUICKSTART.md", "CHANGELOG.md", "PhotoManageGPT-safe-mode.cmd", MANIFEST_FILENAME}
     try:
         with zipfile.ZipFile(zip_path) as archive:
             bad_member = archive.testzip()

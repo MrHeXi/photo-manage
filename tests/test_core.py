@@ -209,6 +209,7 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("CreateFromDirectory", content)
         self.assertIn("photo_dedupe.__version__", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
+        self.assertIn("QUICKSTART.md", content)
         self.assertIn("CHANGELOG.md", content)
         self.assertIn("Get-FileHash", content)
         self.assertIn(".sha256", content)
@@ -224,6 +225,15 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("默认不做永久删除", content)
         self.assertIn("启动烟测", content)
         self.assertIn(".zip.sha256", content)
+
+    def test_quickstart_guides_safe_first_run(self) -> None:
+        quickstart = Path(__file__).resolve().parents[1] / "QUICKSTART.md"
+        content = quickstart.read_text(encoding="utf-8")
+
+        self.assertIn("三分钟上手", content)
+        self.assertIn("设为保护目录", content)
+        self.assertIn("勾选", content)
+        self.assertIn("默认不做永久删除", content)
 
     def test_build_script_runs_release_check(self) -> None:
         script = Path(__file__).resolve().parents[1] / "build.ps1"
@@ -322,10 +332,11 @@ class BrandingAssetTests(unittest.TestCase):
             "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n处理结果报告\n操作记录\nRELEASE-MANIFEST.json\n启动烟测\n",
             encoding="utf-8",
         )
+        (root / "QUICKSTART.md").write_text("三分钟上手\n设为保护目录\n勾选\n默认不做永久删除\n", encoding="utf-8")
         (root / "CHANGELOG.md").write_text("Windows 推广版\n默认不做永久删除\n启动烟测\n", encoding="utf-8")
         (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
         (root / "package.ps1").write_text(
-            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCHANGELOG.md\nCreateFromDirectory\nGet-FileHash\n.sha256\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
+            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nQUICKSTART.md\nCHANGELOG.md\nCreateFromDirectory\nGet-FileHash\n.sha256\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
             encoding="utf-8",
         )
         (root / "run-safe.ps1").write_text("--safe-mode\n", encoding="utf-8")
@@ -342,6 +353,7 @@ class BrandingAssetTests(unittest.TestCase):
         (root / "dist" / "PhotoManageGPT" / "PhotoManageGPT.exe").write_bytes(b"exe")
         (release_dir / "PhotoManageGPT.exe").write_bytes(b"exe")
         (release_dir / "README.md").write_text("readme", encoding="utf-8")
+        (release_dir / "QUICKSTART.md").write_text("quickstart", encoding="utf-8")
         (release_dir / "CHANGELOG.md").write_text("changelog", encoding="utf-8")
         (release_dir / "PhotoManageGPT-safe-mode.cmd").write_text("--safe-mode", encoding="ascii")
         if with_manifest:

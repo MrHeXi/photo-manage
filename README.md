@@ -223,7 +223,7 @@ py -3.10 -m venv .venv
 .\package.ps1
 ```
 
-发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，旁边会生成 `PhotoManageGPT-v版本号-win64.zip.sha256` 校验文件。zip 里面包含主程序、README、CHANGELOG、安全模式启动入口和 `RELEASE-MANIFEST.json`。打包过程中会先运行发布目录内 `PhotoManageGPT.exe --startup-smoke-test`，确认主窗口能在安全模式下初始化并退出。Manifest 会记录版本、生成时间、入口文件、安全说明和文件 SHA-256，方便发布后核对。
+发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，旁边会生成 `PhotoManageGPT-v版本号-win64.zip.sha256` 校验文件。zip 里面包含主程序、README、QUICKSTART、CHANGELOG、安全模式启动入口和 `RELEASE-MANIFEST.json`。打包过程中会先运行发布目录内 `PhotoManageGPT.exe --startup-smoke-test`，确认主窗口能在安全模式下初始化并退出。Manifest 会记录版本、生成时间、入口文件、安全说明和文件 SHA-256，方便发布后核对。
 
 ## 测试
 
