@@ -361,6 +361,8 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(by_name["启动日志"].status, "正常")
         self.assertEqual(by_name["视频指纹"].status, "可选缺失")
         self.assertIn("500/1200", by_name["历史缓存"].detail)
+        self.assertEqual(by_name["后台残留排查"].status, "提示")
+        self.assertIn("安全模式", by_name["后台残留排查"].detail)
 
     def test_format_health_report_is_plain_text(self) -> None:
         report = format_health_report(

@@ -510,7 +510,7 @@ class MainWindow(QMainWindow):
             status_cell = QTableWidgetItem(item.status)
             if item.status in {"正常"}:
                 status_cell.setForeground(QColor("#1a7f37"))
-            elif item.status in {"可选缺失", "未创建", "待加载"}:
+            elif item.status in {"可选缺失", "未创建", "待加载", "提示"}:
                 status_cell.setForeground(QColor("#bf8700"))
             else:
                 status_cell.setForeground(QColor("#cf222e"))

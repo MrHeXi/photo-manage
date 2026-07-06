@@ -132,6 +132,11 @@ def build_health_items(
         DiagnosticItem("启动日志", log_status, log_detail),
         DiagnosticItem("视频指纹", "正常" if ffmpeg_available else "可选缺失", "已检测到 ffmpeg" if ffmpeg_available else "未检测到 ffmpeg，相似视频检测会跳过"),
         DiagnosticItem("历史缓存", "正常" if loaded_groups or total_groups else "待加载", history_detail),
+        DiagnosticItem(
+            "后台残留排查",
+            "提示",
+            f"当前进程 PID {os.getpid()}。如果关闭窗口后任务管理器仍有 PhotoManageGPT.exe，可结束该进程后重启；若怀疑历史缓存导致卡住，请使用安全模式启动。",
+        ),
         DiagnosticItem("运行环境", "正常", f"Python {sys.version.split()[0]} / {platform.platform()}"),
     ]
     if app_version:

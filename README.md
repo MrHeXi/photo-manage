@@ -162,6 +162,8 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m photo_dedupe --safe-mode
 ```
 
+如果关闭窗口后任务管理器中仍有 `PhotoManageGPT.exe`，可以先结束该进程，再用安全模式启动排查历史缓存或启动日志。
+
 也可以运行：
 
 ```powershell
