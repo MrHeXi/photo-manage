@@ -133,7 +133,11 @@ APP_NAME = "Photo Manage GPT"
 APP_VERSION = __version__
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 APP_USER_MODEL_ID = "PhotoManageGPT.PhotoManageGPT.1"
-EMPTY_SCAN_GUIDANCE = "暂无重复分组。添加扫描目录，必要时先设为保护目录，然后开始扫描。"
+EMPTY_SCAN_GUIDANCE = (
+    "暂无重复分组。\n"
+    "第一次使用：可在“新手向导”点击“创建演示样例”先练习，或点击“添加文件夹”添加扫描目录。\n"
+    "处理真实资料前，建议先把主相册、主资料库或工作目录设为保护目录。"
+)
 SUPPORT_DOCUMENTS = {
     "quickstart": "QUICKSTART.md",
     "readme": "README.md",
@@ -2062,7 +2066,10 @@ class MainWindow(QMainWindow):
             self.preview_label.setText("选择图片以预览")
             self.detail_label.setText("当前没有可预览的文件。")
             self.group_detail_summary_label.setText("选择一个重复分组后，这里会显示占用空间、预估可省、涉及磁盘/目录和推荐保留原因。")
-            self.group_status_label.setText(f"当前筛选下没有匹配的重复分组。\n可清空筛选，或添加目录后重新扫描。")
+            if not self.groups:
+                self.group_status_label.setText(f"当前还没有扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
+            else:
+                self.group_status_label.setText(f"当前筛选下没有匹配的重复分组。\n可清空筛选，或添加目录后重新扫描。")
             return
 
         if min_size_bytes < 0:

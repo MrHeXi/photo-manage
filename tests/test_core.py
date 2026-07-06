@@ -861,8 +861,23 @@ class MainWindowStartupTests(unittest.TestCase):
                 guide_buttons = {button.text() for button in window.findChildren(QPushButton)}
                 self.assertIn("创建演示样例", guide_buttons)
                 window.refresh_group_list()
-                self.assertIn("清空筛选", window.group_status_label.text())
+                self.assertIn("创建演示样例", window.group_status_label.text())
+                self.assertIn("添加扫描目录", window.group_status_label.text())
                 self.assertIn("当前没有可预览的文件", window.detail_label.text())
+                window.groups = [
+                    DuplicateGroup(
+                        kind="exact",
+                        title="demo group",
+                        records=[
+                            FileRecord(path=Path("D:/demo/a.jpg"), size=10, modified_at=1.0),
+                            FileRecord(path=Path("D:/demo/b.jpg"), size=10, modified_at=2.0),
+                        ],
+                    )
+                ]
+                window.group_search_input.setText("not-found")
+                window.refresh_group_list()
+                self.assertIn("清空筛选", window.group_status_label.text())
+                window.group_search_input.clear()
                 self.assertEqual(window._close_warning_reasons(), [])
                 window.organize_preview_items = [
                     OrganizePreviewItem(Path("D:/source/photo.jpg"), "photo", "图片格式", Path("E:/target/photo.jpg"))
