@@ -23,6 +23,7 @@ from photo_dedupe.core.diagnostics import (
     format_health_report,
     setup_logging,
 )
+from photo_dedupe.core.demo_workspace import DEMO_WORKSPACE_NAME, create_demo_workspace
 from photo_dedupe.core.directory_index import build_directory_duplicate_index
 from photo_dedupe.core.exporter import (
     build_duplicate_report_html,
@@ -627,6 +628,28 @@ class OrganizeProfileTests(unittest.TestCase):
             get_builtin_template("missing")
 
 
+class DemoWorkspaceTests(unittest.TestCase):
+    def test_create_demo_workspace_builds_unique_safe_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            first = create_demo_workspace(parent)
+            second = create_demo_workspace(parent)
+
+            library_photo = first.scan_roots[0] / "Photos" / "2026" / "family-original.jpg"
+            backup_photo = first.scan_roots[1] / "Backup" / "family-copy.jpg"
+            library_doc = first.scan_roots[0] / "Documents" / "project-notes.txt"
+            backup_doc = first.scan_roots[1] / "Backup" / "project-notes-copy.txt"
+
+            self.assertEqual(first.root.name, DEMO_WORKSPACE_NAME)
+            self.assertEqual(second.root.name, f"{DEMO_WORKSPACE_NAME}-2")
+            self.assertEqual(len(first.scan_roots), 2)
+            self.assertEqual(first.protected_roots, (first.scan_roots[0],))
+            self.assertGreaterEqual(first.file_count, 7)
+            self.assertEqual(first.duplicate_pair_count, 3)
+            self.assertEqual(library_photo.read_bytes(), backup_photo.read_bytes())
+            self.assertEqual(library_doc.read_text(encoding="utf-8"), backup_doc.read_text(encoding="utf-8"))
+
+
 class OnboardingTests(unittest.TestCase):
     def test_empty_state_points_to_adding_scan_roots(self) -> None:
         steps = build_onboarding_steps(
@@ -645,7 +668,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(by_key["scan_roots"].status, STATUS_NEXT)
         self.assertEqual(by_key["protected_roots"].status, STATUS_WAITING)
         self.assertIn("选择扫描目录", onboarding_summary(steps))
-        self.assertIn("一次添加多个扫描目录", onboarding_primary_guidance(steps))
+        self.assertIn("演示样例", onboarding_primary_guidance(steps))
 
     def test_selected_roots_recommend_protection_then_scan(self) -> None:
         steps = build_onboarding_steps(
@@ -800,7 +823,7 @@ class MainWindowStartupTests(unittest.TestCase):
 
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication, QLineEdit, QScrollArea
+        from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QScrollArea
         from photo_dedupe.ui.main_window import MainWindow, find_support_document
 
         app = QApplication.instance() or QApplication([])
@@ -835,6 +858,8 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
                 self.assertIn("选择扫描目录", window.onboarding_summary_label.text())
                 self.assertIn("添加", window.onboarding_guidance_label.text())
+                guide_buttons = {button.text() for button in window.findChildren(QPushButton)}
+                self.assertIn("创建演示样例", guide_buttons)
                 window.refresh_group_list()
                 self.assertIn("清空筛选", window.group_status_label.text())
                 self.assertIn("当前没有可预览的文件", window.detail_label.text())

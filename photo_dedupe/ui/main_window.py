@@ -55,6 +55,7 @@ from photo_dedupe.core.diagnostics import (
     install_exception_logging,
     setup_logging,
 )
+from photo_dedupe.core.demo_workspace import create_demo_workspace as create_demo_workspace_files
 from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv, export_scan_sessions_csv
 from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
@@ -873,6 +874,8 @@ class MainWindow(QMainWindow):
         apply_template_button.clicked.connect(self.apply_selected_template)
         guide_add_folder_button = QPushButton("添加文件夹")
         guide_add_folder_button.clicked.connect(self.guide_add_folder)
+        guide_demo_button = QPushButton("创建演示样例")
+        guide_demo_button.clicked.connect(self.create_demo_workspace)
         guide_protect_button = QPushButton("设为保护目录")
         guide_protect_button.clicked.connect(self.guide_mark_protected_folder)
         guide_scan_button = QPushButton("开始扫描")
@@ -1269,6 +1272,7 @@ class MainWindow(QMainWindow):
         onboarding_actions = QGridLayout()
         guide_buttons = (
             guide_add_folder_button,
+            guide_demo_button,
             guide_protect_button,
             guide_scan_button,
             guide_rule_button,
@@ -1968,6 +1972,40 @@ class MainWindow(QMainWindow):
     def guide_add_folder(self) -> None:
         self.add_folder()
         self.refresh_onboarding()
+
+    def create_demo_workspace(self) -> None:
+        desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+        parent = desktop if desktop.exists() else Path.home()
+        try:
+            summary = create_demo_workspace_files(parent)
+        except Exception as exc:
+            QMessageBox.critical(self, "创建失败", str(exc))
+            return
+
+        protected = {normalize_path(path) for path in summary.protected_roots}
+        self.protected_roots.update(protected)
+        existing = {normalize_path(path) for path in self._folder_paths()}
+        added_count = 0
+        for root in summary.scan_roots:
+            normalized = normalize_path(root)
+            if normalized not in existing:
+                self._add_folder_item(root, protected=normalized in protected)
+                existing.add(normalized)
+                added_count += 1
+        self._refresh_folder_item_labels()
+        self._save_settings()
+        self.refresh_onboarding()
+        self.status_label.setText(f"演示样例已创建：{summary.root}")
+        QMessageBox.information(
+            self,
+            "演示样例已创建",
+            (
+                f"目录：{summary.root}\n"
+                f"已添加 {added_count} 个扫描目录，其中主资料库已设为保护目录。\n"
+                f"样例包含 {summary.file_count} 个文件、{summary.duplicate_pair_count} 组可练习处理的重复关系。\n\n"
+                "可以直接点击“开始扫描”体验完整流程。"
+            ),
+        )
 
     def guide_mark_protected_folder(self) -> None:
         if self.folder_list.count() == 0:
