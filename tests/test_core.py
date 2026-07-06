@@ -787,6 +787,13 @@ class MainWindowStartupTests(unittest.TestCase):
                 window.refresh_group_list()
                 self.assertIn("清空筛选", window.group_status_label.text())
                 self.assertIn("当前没有可预览的文件", window.detail_label.text())
+                self.assertEqual(window._close_warning_reasons(), [])
+                window.organize_preview_items = [
+                    OrganizePreviewItem(Path("D:/source/photo.jpg"), "photo", "图片格式", Path("E:/target/photo.jpg"))
+                ]
+                close_reasons = window._close_warning_reasons()
+                self.assertTrue(any("整理预览" in reason and "1 个文件" in reason for reason in close_reasons))
+                window.organize_preview_items = []
             finally:
                 window.close()
                 app.processEvents()

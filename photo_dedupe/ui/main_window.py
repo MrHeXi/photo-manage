@@ -449,6 +449,17 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._finish_startup)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        close_reasons = self._close_warning_reasons()
+        if close_reasons:
+            message = "当前还有未完成或未执行的内容：\n\n"
+            message += "\n".join(f"- {reason}" for reason in close_reasons)
+            message += "\n\n确认退出？"
+            reply = QMessageBox.question(self, "确认退出", message)
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                self.status_label.setText("已取消退出")
+                return
+
         self.media_player.stop()
         if self.worker and self.worker.isRunning():
             self.worker.request_cancel()
@@ -461,6 +472,18 @@ class MainWindow(QMainWindow):
         self._save_settings()
         self.database.close()
         super().closeEvent(event)
+
+    def _close_warning_reasons(self) -> list[str]:
+        reasons: list[str] = []
+        if self.worker and self.worker.isRunning():
+            reasons.append("扫描任务仍在运行，退出会请求停止扫描。")
+        if self.restore_worker and self.restore_worker.isRunning():
+            reasons.append("历史扫描结果仍在加载，退出后下次会重新加载缓存。")
+        if self.ai_worker and self.ai_worker.isRunning():
+            reasons.append("AI 判断仍在进行，退出会中断当前分析。")
+        if self.organize_preview_items:
+            reasons.append(f"整理预览中还有 {len(self.organize_preview_items)} 个文件未执行，退出后需要重新生成预览。")
+        return reasons
 
     def _finish_startup(self) -> None:
         self.group_status_label.setText("正在尝试恢复最近一次扫描结果...")
