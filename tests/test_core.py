@@ -96,6 +96,7 @@ from photo_dedupe.core.processing_risk import (
     RISK_HIGH,
     RISK_LOW,
     RISK_MEDIUM,
+    available_destination_free_bytes,
     build_processing_risk_summary,
     format_processing_confirmation,
 )
@@ -1731,12 +1732,36 @@ class DuplicateScannerTests(unittest.TestCase):
         group = DuplicateGroup(kind="exact", title="group", records=[keep, remove])
         plan = build_processing_plan([group], set())
 
-        summary = build_processing_risk_summary(plan, "移动到目标目录", Path("D:/duplicates"))
+        summary = build_processing_risk_summary(plan, "移动到目标目录", Path("D:/duplicates"), destination_free_bytes=1024)
         text = format_processing_confirmation(summary)
 
         self.assertEqual(summary.risk_level, RISK_LOW)
         self.assertIn("风险等级：低", text)
         self.assertIn("目标目录", text)
+        self.assertIn("目标磁盘可用空间：1.0 KB", text)
+
+    def test_processing_risk_summary_warns_when_destination_space_is_low(self) -> None:
+        root = Path("D:/demo")
+        keep = FileRecord(path=root / "keep" / "photo.jpg", size=20, modified_at=2.0, keep_selected=True)
+        remove = FileRecord(path=root / "temp" / "photo-copy.jpg", size=2048, modified_at=3.0, keep_selected=False)
+        group = DuplicateGroup(kind="exact", title="group", records=[keep, remove])
+        plan = build_processing_plan([group], set())
+
+        summary = build_processing_risk_summary(plan, "移动到目标目录", Path("D:/duplicates"), destination_free_bytes=1024)
+        text = format_processing_confirmation(summary)
+
+        self.assertEqual(summary.risk_level, RISK_HIGH)
+        self.assertTrue(any("可用空间不足" in warning for warning in summary.warnings))
+        self.assertIn("预计移动后剩余：不足 1.0 KB", text)
+
+    def test_available_destination_free_bytes_uses_existing_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "missing" / "target"
+
+            free_bytes = available_destination_free_bytes(destination)
+
+        self.assertIsNotNone(free_bytes)
+        self.assertGreater(free_bytes or 0, 0)
 
     def test_processing_risk_summary_warns_about_protected_skips(self) -> None:
         root = Path("D:/demo")

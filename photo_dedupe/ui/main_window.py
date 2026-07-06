@@ -112,7 +112,7 @@ from photo_dedupe.core.progress_status import (
     format_restore_status,
     format_scan_start,
 )
-from photo_dedupe.core.processing_risk import build_processing_risk_summary, format_processing_confirmation
+from photo_dedupe.core.processing_risk import available_destination_free_bytes, build_processing_risk_summary, format_processing_confirmation
 from photo_dedupe.core.scanner import DuplicateScanner
 from photo_dedupe.core.selection import (
     build_processing_plan,
@@ -3067,10 +3067,14 @@ class MainWindow(QMainWindow):
             return
 
         action_label = self.action_combo.currentText()
+        destination_free_bytes = None
+        if "回收站" not in action_label:
+            destination_free_bytes = available_destination_free_bytes(self.destination)
         risk_summary = build_processing_risk_summary(
             plan,
             action_label,
             self.destination,
+            destination_free_bytes=destination_free_bytes,
         )
         reply = QMessageBox.question(
             self,
