@@ -57,7 +57,7 @@ from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv
 from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, trash_records, undo_move
-from photo_dedupe.core.file_reveal import reveal_in_file_manager
+from photo_dedupe.core.file_reveal import operation_reveal_path, reveal_in_file_manager
 from photo_dedupe.core.group_summary import DuplicateGroupSummary, summarize_duplicate_group
 from photo_dedupe.core.hashers import is_image, is_video
 from photo_dedupe.core.image_compare import ImageCompareItem, build_image_compare_items
@@ -674,6 +674,10 @@ class MainWindow(QMainWindow):
         refresh_ops_button.clicked.connect(self.refresh_operations)
         undo_button = QPushButton("撤销选中移动")
         undo_button.clicked.connect(self.undo_selected_operation)
+        reveal_current_op_button = QPushButton("打开当前位置")
+        reveal_current_op_button.clicked.connect(lambda _checked=False: self.reveal_selected_operation("current"))
+        reveal_original_op_button = QPushButton("打开原目录")
+        reveal_original_op_button.clicked.connect(lambda _checked=False: self.reveal_selected_operation("original"))
         export_ops_button = QPushButton("导出操作记录")
         export_ops_button.clicked.connect(self.export_operations)
         refresh_history_button = QPushButton("刷新历史")
@@ -923,6 +927,8 @@ class MainWindow(QMainWindow):
         ops_buttons = QHBoxLayout()
         ops_buttons.addWidget(refresh_ops_button)
         ops_buttons.addWidget(undo_button)
+        ops_buttons.addWidget(reveal_current_op_button)
+        ops_buttons.addWidget(reveal_original_op_button)
         ops_buttons.addWidget(export_ops_button)
 
         operations_panel = QWidget()
@@ -3019,19 +3025,24 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, operation.id)
             self.operations_table.setItem(row, column, item)
 
-    def undo_selected_operation(self) -> None:
+    def selected_operation(self) -> OperationRecord | None:
         selected = self.operations_table.selectedItems()
         if not selected:
-            QMessageBox.information(self, "没有选中记录", "请先在操作记录中选中一条移动记录。")
-            return
+            return None
         row = selected[0].row()
         id_item = self.operations_table.item(row, 5)
         if not id_item:
-            return
+            return None
         operation = self.database.get_operation(int(id_item.text()))
         if operation is None:
             QMessageBox.warning(self, "记录不存在", "这条操作记录已经不存在。")
             self.refresh_operations()
+        return operation
+
+    def undo_selected_operation(self) -> None:
+        operation = self.selected_operation()
+        if operation is None:
+            QMessageBox.information(self, "没有选中记录", "请先在操作记录中选中一条移动记录。")
             return
         if operation.action != "move":
             QMessageBox.information(self, "不可撤销", "移动到回收站的记录请在 Windows 回收站中还原。")
@@ -3053,6 +3064,20 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(self, "撤销完成", f"文件已恢复到：\n{restored}")
         self.refresh_operations()
+
+    def reveal_selected_operation(self, location: str) -> None:
+        operation = self.selected_operation()
+        if operation is None:
+            QMessageBox.information(self, "没有选中记录", "请先在操作记录中选中一条记录。")
+            return
+        target = operation_reveal_path(operation, location)
+        try:
+            reveal_in_file_manager(target)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开位置", str(exc))
+            return
+        label = "当前位置" if location == "current" else "原目录"
+        self.status_label.setText(f"已打开操作记录{label}：{target}")
 
     def export_operations(self) -> None:
         target, _ = QFileDialog.getSaveFileName(self, "导出操作记录", "operations.csv", "CSV Files (*.csv)")

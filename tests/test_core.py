@@ -25,10 +25,10 @@ from photo_dedupe.core.exporter import (
 )
 from photo_dedupe.core.file_details import inspect_file_preview
 from photo_dedupe.core.file_ops import move_records, undo_move, unique_target_path
-from photo_dedupe.core.file_reveal import build_reveal_command
+from photo_dedupe.core.file_reveal import build_reveal_command, operation_reveal_path
 from photo_dedupe.core.group_summary import summarize_duplicate_group
 from photo_dedupe.core.image_compare import build_image_compare_items
-from photo_dedupe.core.models import DuplicateGroup, FileRecord
+from photo_dedupe.core.models import DuplicateGroup, FileRecord, OperationRecord
 from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
     OrganizePreviewSummary,
@@ -548,6 +548,26 @@ class FileRevealTests(unittest.TestCase):
 
         self.assertEqual(command[0:2], ["open", "-R"])
         self.assertTrue(command[2].endswith("a.jpg"))
+
+    def test_operation_reveal_path_prefers_existing_move_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source" / "a.jpg"
+            target = root / "target" / "a.jpg"
+            target.parent.mkdir()
+            target.write_text("x", encoding="utf-8")
+            operation = OperationRecord(1, "move", source, target, 1.0)
+
+            current = operation_reveal_path(operation, "current")
+            original = operation_reveal_path(operation, "original")
+
+        self.assertEqual(current, target)
+        self.assertEqual(original, source.parent)
+
+    def test_operation_reveal_path_opens_original_directory_for_trash(self) -> None:
+        operation = OperationRecord(1, "trash", Path("D:/Photos/a.jpg"), Path(""), 1.0)
+
+        self.assertEqual(operation_reveal_path(operation, "current"), Path("D:/Photos"))
 
 
 class MainWindowStartupTests(unittest.TestCase):

@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from photo_dedupe.core.models import OperationRecord
+
 
 def build_reveal_command(path: Path, platform: str | None = None) -> list[str]:
     platform = platform or sys.platform
@@ -26,3 +28,13 @@ def build_reveal_command(path: Path, platform: str | None = None) -> list[str]:
 def reveal_in_file_manager(path: Path) -> None:
     command = build_reveal_command(path)
     subprocess.Popen(command)
+
+
+def operation_reveal_path(operation: OperationRecord, location: str = "current") -> Path:
+    if location == "original":
+        return operation.source_path.parent
+    if location == "current" and operation.action == "move" and str(operation.target_path):
+        return operation.target_path if operation.target_path.exists() else operation.target_path.parent
+    if operation.source_path.exists():
+        return operation.source_path
+    return operation.source_path.parent
