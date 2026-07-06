@@ -37,6 +37,7 @@ Remove-PathWithRetry $zipPath
 New-Item -ItemType Directory -Path $releaseDir | Out-Null
 Copy-Item -Path "dist\PhotoManageGPT\*" -Destination $releaseDir -Recurse
 Copy-Item -Path "README.md" -Destination (Join-Path $releaseDir "README.md")
+Copy-Item -Path "CHANGELOG.md" -Destination (Join-Path $releaseDir "CHANGELOG.md")
 
 $safeModeLauncher = @"
 @echo off

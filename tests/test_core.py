@@ -208,9 +208,18 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("CreateFromDirectory", content)
         self.assertIn("photo_dedupe.__version__", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
+        self.assertIn("CHANGELOG.md", content)
         self.assertIn("--release-check", content)
         self.assertIn("--write-release-manifest", content)
         self.assertIn("--startup-smoke-test", content)
+
+    def test_changelog_describes_release_safety(self) -> None:
+        changelog = Path(__file__).resolve().parents[1] / "CHANGELOG.md"
+        content = changelog.read_text(encoding="utf-8")
+
+        self.assertIn("Windows 推广版", content)
+        self.assertIn("默认不做永久删除", content)
+        self.assertIn("启动烟测", content)
 
     def test_build_script_runs_release_check(self) -> None:
         script = Path(__file__).resolve().parents[1] / "build.ps1"
@@ -287,9 +296,10 @@ class BrandingAssetTests(unittest.TestCase):
             "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n处理结果报告\n操作记录\nRELEASE-MANIFEST.json\n启动烟测\n",
             encoding="utf-8",
         )
+        (root / "CHANGELOG.md").write_text("Windows 推广版\n默认不做永久删除\n启动烟测\n", encoding="utf-8")
         (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
         (root / "package.ps1").write_text(
-            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCreateFromDirectory\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
+            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCHANGELOG.md\nCreateFromDirectory\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
             encoding="utf-8",
         )
         (root / "run-safe.ps1").write_text("--safe-mode\n", encoding="utf-8")
@@ -306,6 +316,7 @@ class BrandingAssetTests(unittest.TestCase):
         (root / "dist" / "PhotoManageGPT" / "PhotoManageGPT.exe").write_bytes(b"exe")
         (release_dir / "PhotoManageGPT.exe").write_bytes(b"exe")
         (release_dir / "README.md").write_text("readme", encoding="utf-8")
+        (release_dir / "CHANGELOG.md").write_text("changelog", encoding="utf-8")
         (release_dir / "PhotoManageGPT-safe-mode.cmd").write_text("--safe-mode", encoding="ascii")
         if with_manifest:
             write_release_manifest(release_dir, "0.1.0")
