@@ -68,6 +68,8 @@ def _check_required_files(root: Path, items: list[ReleaseCheckItem]) -> None:
         "build.ps1",
         "package.ps1",
         "run-safe.ps1",
+        "install-shortcut.ps1",
+        "remove-shortcut.ps1",
         "PhotoManageGPT.spec",
         "pyproject.toml",
         "photo_dedupe/__main__.py",
@@ -131,6 +133,10 @@ def _check_scripts(root: Path, items: list[ReleaseCheckItem]) -> None:
         problems.append("build.ps1 未运行发布自检")
     if "PhotoManageGPT-safe-mode.cmd" not in package:
         problems.append("package.ps1 未生成安全模式启动器")
+    if "install-shortcut.ps1" not in package:
+        problems.append("package.ps1 未复制桌面快捷方式安装脚本")
+    if "remove-shortcut.ps1" not in package:
+        problems.append("package.ps1 未复制桌面快捷方式移除脚本")
     if "README.md" not in package:
         problems.append("package.ps1 未复制 README")
     if "QUICKSTART.md" not in package:
@@ -150,7 +156,7 @@ def _check_scripts(root: Path, items: list[ReleaseCheckItem]) -> None:
     if problems:
         items.append(ReleaseCheckItem("发布脚本", STATUS_ERROR, "；".join(problems)))
     else:
-        items.append(ReleaseCheckItem("发布脚本", STATUS_OK, "构建、发布包、安全模式入口和启动烟测齐全"))
+        items.append(ReleaseCheckItem("发布脚本", STATUS_OK, "构建、发布包、安全模式入口、快捷方式脚本和启动烟测齐全"))
 
 
 def _check_readme(root: Path, items: list[ReleaseCheckItem]) -> None:
@@ -164,6 +170,7 @@ def _check_readme(root: Path, items: list[ReleaseCheckItem]) -> None:
         "操作记录",
         "RELEASE-MANIFEST.json",
         "启动烟测",
+        "桌面快捷方式",
     ]
     missing = [phrase for phrase in required_phrases if phrase not in readme]
     if missing:
@@ -190,7 +197,16 @@ def _check_release_zip(root: Path, items: list[ReleaseCheckItem]) -> None:
         items.append(ReleaseCheckItem("发布 zip", STATUS_WARN, "尚未生成发布 zip，可运行 .\\package.ps1"))
         return
 
-    required = {"PhotoManageGPT.exe", "README.md", "QUICKSTART.md", "CHANGELOG.md", "PhotoManageGPT-safe-mode.cmd", MANIFEST_FILENAME}
+    required = {
+        "PhotoManageGPT.exe",
+        "README.md",
+        "QUICKSTART.md",
+        "CHANGELOG.md",
+        "PhotoManageGPT-safe-mode.cmd",
+        "install-shortcut.ps1",
+        "remove-shortcut.ps1",
+        MANIFEST_FILENAME,
+    }
     try:
         with zipfile.ZipFile(zip_path) as archive:
             bad_member = archive.testzip()

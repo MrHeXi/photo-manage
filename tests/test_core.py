@@ -212,6 +212,8 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("CreateFromDirectory", content)
         self.assertIn("photo_dedupe.__version__", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
+        self.assertIn("install-shortcut.ps1", content)
+        self.assertIn("remove-shortcut.ps1", content)
         self.assertIn("QUICKSTART.md", content)
         self.assertIn("CHANGELOG.md", content)
         self.assertIn("Get-FileHash", content)
@@ -219,6 +221,22 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("--release-check", content)
         self.assertIn("--write-release-manifest", content)
         self.assertIn("--startup-smoke-test", content)
+
+    def test_shortcut_scripts_only_touch_desktop_shortcuts(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        install_script = root / "install-shortcut.ps1"
+        remove_script = root / "remove-shortcut.ps1"
+        install_content = install_script.read_text(encoding="utf-8")
+        remove_content = remove_script.read_text(encoding="utf-8")
+
+        self.assertTrue(install_script.exists())
+        self.assertTrue(remove_script.exists())
+        self.assertIn("WScript.Shell", install_content)
+        self.assertIn("PhotoManageGPT.exe", install_content)
+        self.assertIn("--safe-mode", install_content)
+        self.assertIn(".lnk", remove_content)
+        self.assertIn("Remove-Item -LiteralPath $shortcutPath", remove_content)
+        self.assertNotIn("-Recurse", remove_content)
 
     def test_changelog_describes_release_safety(self) -> None:
         changelog = Path(__file__).resolve().parents[1] / "CHANGELOG.md"
@@ -228,6 +246,7 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("默认不做永久删除", content)
         self.assertIn("启动烟测", content)
         self.assertIn(".zip.sha256", content)
+        self.assertIn("桌面快捷方式", content)
 
     def test_quickstart_guides_safe_first_run(self) -> None:
         quickstart = Path(__file__).resolve().parents[1] / "QUICKSTART.md"
@@ -237,6 +256,7 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("设为保护目录", content)
         self.assertIn("勾选", content)
         self.assertIn("默认不做永久删除", content)
+        self.assertIn("install-shortcut.ps1", content)
 
     def test_build_script_runs_release_check(self) -> None:
         script = Path(__file__).resolve().parents[1] / "build.ps1"
@@ -332,17 +352,19 @@ class BrandingAssetTests(unittest.TestCase):
         release_dir = root / "release" / "PhotoManageGPT-v0.1.0-win64"
         release_dir.mkdir(parents=True)
         (root / "README.md").write_text(
-            "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n处理结果报告\n操作记录\nRELEASE-MANIFEST.json\n启动烟测\n",
+            "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n处理结果报告\n操作记录\nRELEASE-MANIFEST.json\n启动烟测\n桌面快捷方式\n",
             encoding="utf-8",
         )
         (root / "QUICKSTART.md").write_text("三分钟上手\n设为保护目录\n勾选\n默认不做永久删除\n", encoding="utf-8")
         (root / "CHANGELOG.md").write_text("Windows 推广版\n默认不做永久删除\n启动烟测\n", encoding="utf-8")
         (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
         (root / "package.ps1").write_text(
-            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nQUICKSTART.md\nCHANGELOG.md\nCreateFromDirectory\nGet-FileHash\n.sha256\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
+            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\ninstall-shortcut.ps1\nremove-shortcut.ps1\nREADME.md\nQUICKSTART.md\nCHANGELOG.md\nCreateFromDirectory\nGet-FileHash\n.sha256\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
             encoding="utf-8",
         )
         (root / "run-safe.ps1").write_text("--safe-mode\n", encoding="utf-8")
+        (root / "install-shortcut.ps1").write_text("WScript.Shell\nPhotoManageGPT.exe\n--safe-mode\n", encoding="utf-8")
+        (root / "remove-shortcut.ps1").write_text("Remove-Item -LiteralPath $shortcutPath\n", encoding="utf-8")
         (root / "PhotoManageGPT.spec").write_text(
             "datas=[('photo_dedupe\\\\assets','photo_dedupe\\\\assets')]\nconsole=False\nicon='photo_dedupe\\\\assets\\\\app_icon.ico'\n",
             encoding="utf-8",
@@ -359,6 +381,8 @@ class BrandingAssetTests(unittest.TestCase):
         (release_dir / "QUICKSTART.md").write_text("quickstart", encoding="utf-8")
         (release_dir / "CHANGELOG.md").write_text("changelog", encoding="utf-8")
         (release_dir / "PhotoManageGPT-safe-mode.cmd").write_text("--safe-mode", encoding="ascii")
+        (release_dir / "install-shortcut.ps1").write_text("shortcut", encoding="ascii")
+        (release_dir / "remove-shortcut.ps1").write_text("remove", encoding="ascii")
         if with_manifest:
             write_release_manifest(release_dir, "0.1.0")
         return root

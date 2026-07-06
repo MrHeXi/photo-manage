@@ -40,6 +40,8 @@ Copy-Item -Path "dist\PhotoManageGPT\*" -Destination $releaseDir -Recurse
 Copy-Item -Path "README.md" -Destination (Join-Path $releaseDir "README.md")
 Copy-Item -Path "CHANGELOG.md" -Destination (Join-Path $releaseDir "CHANGELOG.md")
 Copy-Item -Path "QUICKSTART.md" -Destination (Join-Path $releaseDir "QUICKSTART.md")
+Copy-Item -Path "install-shortcut.ps1" -Destination (Join-Path $releaseDir "install-shortcut.ps1")
+Copy-Item -Path "remove-shortcut.ps1" -Destination (Join-Path $releaseDir "remove-shortcut.ps1")
 
 $safeModeLauncher = @"
 @echo off

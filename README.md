@@ -218,7 +218,7 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m photo_dedupe --release-check
 ```
 
-发布自检会检查版本号、图标、PyInstaller 配置、README、安全模式启动器、EXE 产物、发布 Manifest、启动烟测配置和发布脚本。`发布 zip` 未生成时只会提醒；真正发布前运行 `.\package.ps1` 即可生成 zip。
+发布自检会检查版本号、图标、PyInstaller 配置、README、安全模式启动器、桌面快捷方式脚本、EXE 产物、发布 Manifest、启动烟测配置和发布脚本。`发布 zip` 未生成时只会提醒；真正发布前运行 `.\package.ps1` 即可生成 zip。
 
 生成便携发布包：
 
@@ -226,7 +226,9 @@ py -3.10 -m venv .venv
 .\package.ps1
 ```
 
-发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，旁边会生成 `PhotoManageGPT-v版本号-win64.zip.sha256` 校验文件。zip 里面包含主程序、README、QUICKSTART、CHANGELOG、安全模式启动入口和 `RELEASE-MANIFEST.json`。打包过程中会先运行发布目录内 `PhotoManageGPT.exe --startup-smoke-test`，确认主窗口能在安全模式下初始化并退出。Manifest 会记录版本、生成时间、入口文件、安全说明和文件 SHA-256，方便发布后核对。
+发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，旁边会生成 `PhotoManageGPT-v版本号-win64.zip.sha256` 校验文件。zip 里面包含主程序、README、QUICKSTART、CHANGELOG、安全模式启动入口、桌面快捷方式安装/移除脚本和 `RELEASE-MANIFEST.json`。打包过程中会先运行发布目录内 `PhotoManageGPT.exe --startup-smoke-test`，确认主窗口能在安全模式下初始化并退出。Manifest 会记录版本、生成时间、入口文件、安全说明和文件 SHA-256，方便发布后核对。
+
+解压发布包后，如果希望在桌面创建入口，可以右键 `install-shortcut.ps1` 选择“使用 PowerShell 运行”。它会创建普通启动和安全模式两个桌面快捷方式；不再需要时运行 `remove-shortcut.ps1` 只会移除这两个快捷方式，不会删除软件目录或用户文件。
 
 ## 测试
 
