@@ -43,6 +43,10 @@ $safeModeLauncher = @"
 start "" "%~dp0PhotoManageGPT.exe" --safe-mode
 "@
 Set-Content -Path (Join-Path $releaseDir "PhotoManageGPT-safe-mode.cmd") -Value $safeModeLauncher -Encoding ASCII
+
+$smokeExe = Join-Path $releaseDir "PhotoManageGPT.exe"
+& $smokeExe --startup-smoke-test
+
 & $python -m photo_dedupe --write-release-manifest $releaseDir
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem

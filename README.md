@@ -181,6 +181,12 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m photo_dedupe --safe-mode
 ```
 
+也可以运行启动烟测，软件会在临时数据目录和安全模式下初始化主窗口后立即退出，用于确认当前环境不会出现无界面后台进程：
+
+```powershell
+.\.venv\Scripts\python.exe -m photo_dedupe --startup-smoke-test
+```
+
 如果关闭窗口后任务管理器中仍有 `PhotoManageGPT.exe`，可以先结束该进程，再用安全模式启动排查历史缓存或启动日志。
 
 也可以运行：
@@ -209,7 +215,7 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m photo_dedupe --release-check
 ```
 
-发布自检会检查版本号、图标、PyInstaller 配置、README、安全模式启动器、EXE 产物、发布 Manifest 和发布脚本。`发布 zip` 未生成时只会提醒；真正发布前运行 `.\package.ps1` 即可生成 zip。
+发布自检会检查版本号、图标、PyInstaller 配置、README、安全模式启动器、EXE 产物、发布 Manifest、启动烟测配置和发布脚本。`发布 zip` 未生成时只会提醒；真正发布前运行 `.\package.ps1` 即可生成 zip。
 
 生成便携发布包：
 
@@ -217,7 +223,7 @@ py -3.10 -m venv .venv
 .\package.ps1
 ```
 
-发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，里面包含主程序、README、安全模式启动入口和 `RELEASE-MANIFEST.json`。Manifest 会记录版本、生成时间、入口文件、安全说明和文件 SHA-256，方便发布后核对。
+发布包会生成到 `release\PhotoManageGPT-v版本号-win64.zip`，里面包含主程序、README、安全模式启动入口和 `RELEASE-MANIFEST.json`。打包过程中会先运行发布目录内 `PhotoManageGPT.exe --startup-smoke-test`，确认主窗口能在安全模式下初始化并退出。Manifest 会记录版本、生成时间、入口文件、安全说明和文件 SHA-256，方便发布后核对。
 
 ## 测试
 

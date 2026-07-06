@@ -136,10 +136,12 @@ def _check_scripts(root: Path, items: list[ReleaseCheckItem]) -> None:
         problems.append("package.ps1 未生成发布 Manifest")
     if "--release-check" not in package:
         problems.append("package.ps1 未运行发布自检")
+    if "--startup-smoke-test" not in package:
+        problems.append("package.ps1 未运行打包 EXE 启动烟测")
     if problems:
         items.append(ReleaseCheckItem("发布脚本", STATUS_ERROR, "；".join(problems)))
     else:
-        items.append(ReleaseCheckItem("发布脚本", STATUS_OK, "构建、发布包、安全模式入口齐全"))
+        items.append(ReleaseCheckItem("发布脚本", STATUS_OK, "构建、发布包、安全模式入口和启动烟测齐全"))
 
 
 def _check_readme(root: Path, items: list[ReleaseCheckItem]) -> None:
@@ -152,6 +154,7 @@ def _check_readme(root: Path, items: list[ReleaseCheckItem]) -> None:
         "处理结果报告",
         "操作记录",
         "RELEASE-MANIFEST.json",
+        "启动烟测",
     ]
     missing = [phrase for phrase in required_phrases if phrase not in readme]
     if missing:

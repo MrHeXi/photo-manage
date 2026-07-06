@@ -26,6 +26,12 @@ def main() -> None:
         print(f"Release manifest: {target}")
         raise SystemExit(0)
 
+    if "--startup-smoke-test" in sys.argv:
+        from photo_dedupe.ui.main_window import startup_smoke_test
+
+        print(startup_smoke_test())
+        raise SystemExit(0)
+
     from photo_dedupe.ui.main_window import run
 
     run()

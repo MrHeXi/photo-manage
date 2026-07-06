@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -3607,3 +3608,58 @@ def run() -> None:
     except Exception:
         logger.exception("Fatal startup failure")
         raise
+
+
+def _close_photo_manage_log_handlers() -> None:
+    for handler in list(logging.getLogger().handlers):
+        if getattr(handler, "_photo_manage_handler", False):
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+
+def startup_smoke_test() -> str:
+    original_qt_platform = os.environ.get("QT_QPA_PLATFORM")
+    original_local_app_data = os.environ.get("LOCALAPPDATA")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["LOCALAPPDATA"] = directory
+            log_path = setup_logging(default_log_path(Path(directory)))
+            app = QApplication.instance()
+            owns_app = app is None
+            window: MainWindow | None = None
+            try:
+                install_exception_logging()
+                set_windows_app_user_model_id()
+                if app is None:
+                    app = QApplication([APP_NAME, "--startup-smoke-test"])
+                app.setQuitOnLastWindowClosed(True)
+                icon = load_app_icon()
+                if not icon.isNull():
+                    app.setWindowIcon(icon)
+                window = MainWindow(safe_mode=True)
+                window.show()
+                app.processEvents()
+                if not window.isVisible():
+                    raise RuntimeError("主窗口未成功显示")
+                report = window._current_support_report()
+                if "安全模式：是" not in report:
+                    raise RuntimeError("启动烟测未进入安全模式")
+                return f"启动烟测通过：{APP_TITLE}，日志：{log_path}"
+            finally:
+                if window is not None:
+                    window.close()
+                    if app is not None:
+                        app.processEvents()
+                if owns_app and app is not None:
+                    app.quit()
+                _close_photo_manage_log_handlers()
+    finally:
+        if original_qt_platform is None:
+            os.environ.pop("QT_QPA_PLATFORM", None)
+        else:
+            os.environ["QT_QPA_PLATFORM"] = original_qt_platform
+        if original_local_app_data is None:
+            os.environ.pop("LOCALAPPDATA", None)
+        else:
+            os.environ["LOCALAPPDATA"] = original_local_app_data

@@ -210,6 +210,7 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
         self.assertIn("--release-check", content)
         self.assertIn("--write-release-manifest", content)
+        self.assertIn("--startup-smoke-test", content)
 
     def test_build_script_runs_release_check(self) -> None:
         script = Path(__file__).resolve().parents[1] / "build.ps1"
@@ -283,12 +284,12 @@ class BrandingAssetTests(unittest.TestCase):
         release_dir = root / "release" / "PhotoManageGPT-v0.1.0-win64"
         release_dir.mkdir(parents=True)
         (root / "README.md").write_text(
-            "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n处理结果报告\n操作记录\nRELEASE-MANIFEST.json\n",
+            "安全模式\n打包 EXE\n发布自检\n默认不做永久删除\n处理结果报告\n操作记录\nRELEASE-MANIFEST.json\n启动烟测\n",
             encoding="utf-8",
         )
         (root / "build.ps1").write_text("PyInstaller PhotoManageGPT.spec\n--release-check\n", encoding="utf-8")
         (root / "package.ps1").write_text(
-            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCreateFromDirectory\n--release-check\n--write-release-manifest\n",
+            "photo_dedupe.__version__\nPhotoManageGPT-safe-mode.cmd\nREADME.md\nCreateFromDirectory\n--release-check\n--write-release-manifest\n--startup-smoke-test\n",
             encoding="utf-8",
         )
         (root / "run-safe.ps1").write_text("--safe-mode\n", encoding="utf-8")
@@ -703,6 +704,18 @@ class OperationFilterTests(unittest.TestCase):
 
 
 class MainWindowStartupTests(unittest.TestCase):
+    def test_startup_smoke_test_initializes_window_and_restores_environment(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from photo_dedupe.ui.main_window import startup_smoke_test
+
+        with patch.dict(os.environ, {"LOCALAPPDATA": "D:/RealUserData"}):
+            result = startup_smoke_test()
+            restored = os.environ.get("LOCALAPPDATA")
+
+        self.assertIn("启动烟测通过", result)
+        self.assertIn("Photo Manage GPT", result)
+        self.assertEqual(restored, "D:/RealUserData")
+
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication, QLineEdit, QScrollArea
