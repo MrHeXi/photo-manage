@@ -65,9 +65,12 @@ from photo_dedupe.core.operation_filters import (
 )
 from photo_dedupe.core.organize_profiles import (
     OrganizeProfile,
+    build_template_profile,
     clean_profile_name,
     decode_profiles,
     encode_profiles,
+    get_builtin_template,
+    list_builtin_templates,
     profile_summary,
     remove_profile,
     upsert_profile,
@@ -507,6 +510,38 @@ class OrganizeProfileTests(unittest.TestCase):
         self.assertIn("扫描目录 2 个", summary)
         self.assertIn("保护目录 1 个", summary)
         self.assertIn("保留最高质量", summary)
+
+    def test_builtin_templates_are_available_for_common_workflows(self) -> None:
+        templates = list_builtin_templates()
+
+        names = {template.name for template in templates}
+        self.assertIn("家庭照片整理", names)
+        self.assertIn("多盘照片汇总", names)
+        self.assertIn("工作文档归档", names)
+        self.assertIn("聊天缓存复核", names)
+        self.assertTrue(all(template.description for template in templates))
+
+    def test_build_template_profile_preserves_user_roots(self) -> None:
+        base_root = Path("D:/PhotoManageGPT_整理库")
+        profile = build_template_profile(
+            "family_photo_library",
+            base_root,
+            scan_roots=(Path("D:/Photos"),),
+            protected_roots=(Path("D:/Photos/Library"),),
+        )
+
+        self.assertEqual(profile.name, "家庭照片整理")
+        self.assertEqual(profile.scan_roots, (Path("D:/Photos"),))
+        self.assertEqual(profile.protected_roots, (Path("D:/Photos/Library"),))
+        self.assertEqual(profile.bulk_keep_rule, "保留保护目录内文件")
+        self.assertEqual(profile.organize_rule, "按拍摄年月")
+        self.assertTrue(profile.organize_keep_only)
+        self.assertEqual(profile.duplicate_destination, base_root / "重复待复核")
+        self.assertEqual(profile.photo_target, base_root / "照片")
+
+    def test_unknown_template_key_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            get_builtin_template("missing")
 
 
 class OnboardingTests(unittest.TestCase):

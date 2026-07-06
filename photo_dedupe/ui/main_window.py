@@ -78,9 +78,12 @@ from photo_dedupe.core.organizer import (
 from photo_dedupe.core.organize_profiles import (
     PROFILE_SETTINGS_KEY,
     OrganizeProfile,
+    build_template_profile,
     clean_profile_name,
     decode_profiles,
     encode_profiles,
+    get_builtin_template,
+    list_builtin_templates,
     profile_summary,
     remove_profile,
     upsert_profile,
@@ -342,6 +345,7 @@ class MainWindow(QMainWindow):
         self.group_type_filter_combo = QComboBox()
         self.group_sort_combo = QComboBox()
         self.profile_combo = QComboBox()
+        self.template_combo = QComboBox()
         self.group_search_input = QLineEdit()
         self.group_min_size_input = QLineEdit()
         self.group_min_size_unit_combo = QComboBox()
@@ -413,6 +417,7 @@ class MainWindow(QMainWindow):
         self.onboarding_summary_label = QLabel("")
         self.onboarding_guidance_label = QLabel("")
         self.profile_summary_label = QLabel("")
+        self.template_summary_label = QLabel("")
         self.status_label = QLabel("准备就绪")
         self.progress = QProgressBar()
         self.media_player = QMediaPlayer(self)
@@ -785,6 +790,8 @@ class MainWindow(QMainWindow):
         load_profile_button.clicked.connect(self.load_selected_profile)
         delete_profile_button = QPushButton("删除方案")
         delete_profile_button.clicked.connect(self.delete_selected_profile)
+        apply_template_button = QPushButton("套用模板")
+        apply_template_button.clicked.connect(self.apply_selected_template)
         guide_add_folder_button = QPushButton("添加文件夹")
         guide_add_folder_button.clicked.connect(self.guide_add_folder)
         guide_protect_button = QPushButton("设为保护目录")
@@ -819,6 +826,11 @@ class MainWindow(QMainWindow):
         self.threshold_spin.setToolTip("值越大，相似图片匹配越宽松。建议 6-10。")
         self.threshold_spin.valueChanged.connect(lambda _value: self._save_settings())
         self.profile_combo.currentIndexChanged.connect(self.on_profile_selection_changed)
+        self.template_combo.addItem("选择内置模板", None)
+        for template in list_builtin_templates():
+            self.template_combo.addItem(template.name, template.key)
+            self.template_combo.setItemData(self.template_combo.count() - 1, template.description, Qt.ItemDataRole.ToolTipRole)
+        self.template_combo.currentIndexChanged.connect(self.on_template_selection_changed)
 
         folder_buttons = QHBoxLayout()
         folder_buttons.addWidget(add_button)
@@ -828,6 +840,8 @@ class MainWindow(QMainWindow):
         profile_buttons.addWidget(save_profile_button)
         profile_buttons.addWidget(load_profile_button)
         profile_buttons.addWidget(delete_profile_button)
+        template_buttons = QHBoxLayout()
+        template_buttons.addWidget(apply_template_button)
 
         left = QWidget()
         left.setObjectName("Sidebar")
@@ -839,6 +853,12 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(folder_buttons)
         self.profile_summary_label.setWordWrap(True)
         self.profile_summary_label.setText("保存常用扫描目录、保护目录、保留规则和整理目标。")
+        self.template_summary_label.setWordWrap(True)
+        self.template_summary_label.setText("选择一个常见场景后套用，不会移动或删除文件。")
+        left_layout.addWidget(QLabel("内置模板"))
+        left_layout.addWidget(self.template_combo)
+        left_layout.addLayout(template_buttons)
+        left_layout.addWidget(self.template_summary_label)
         left_layout.addWidget(QLabel("整理方案"))
         left_layout.addWidget(self.profile_combo)
         left_layout.addLayout(profile_buttons)
@@ -1495,6 +1515,54 @@ class MainWindow(QMainWindow):
             self.profile_summary_label.setText("保存常用扫描目录、保护目录、保留规则和整理目标。")
             return
         self.profile_summary_label.setText(profile_summary(profile))
+
+    def _selected_template_key(self) -> str | None:
+        value = self.template_combo.currentData()
+        return str(value) if value else None
+
+    def on_template_selection_changed(self) -> None:
+        key = self._selected_template_key()
+        if not key:
+            self.template_summary_label.setText("选择一个常见场景后套用，不会移动或删除文件。")
+            return
+        try:
+            template = get_builtin_template(key)
+        except ValueError:
+            self.template_summary_label.setText("这个模板暂时不可用。")
+            return
+        self.template_summary_label.setText(template.description)
+
+    def apply_selected_template(self) -> None:
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, "扫描中", "请先停止或等待当前扫描完成，再套用整理模板。")
+            return
+        key = self._selected_template_key()
+        if not key:
+            QMessageBox.information(self, "没有选中模板", "请先选择一个内置整理模板。")
+            return
+        base_root = self.destination.parent / "PhotoManageGPT_整理库"
+        profile = build_template_profile(
+            key,
+            base_root,
+            scan_roots=tuple(self._folder_paths()),
+            protected_roots=tuple(sorted((normalize_path(path) for path in self.protected_roots), key=str)),
+        )
+        answer = QMessageBox.question(
+            self,
+            "套用整理模板",
+            f"将套用“{profile.name}”，保留当前扫描目录和保护目录，并替换保留规则、整理规则和目标目录。\n\n"
+            f"重复待复核目录：{profile.duplicate_destination}\n"
+            f"照片目标目录：{profile.photo_target}\n\n"
+            "此操作不会移动、回收或删除任何文件。是否继续？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.profile_combo.setCurrentIndex(0)
+        self.apply_profile(profile)
+        self.profile_summary_label.setText(f"已套用模板：{profile_summary(profile)}")
+        self.status_label.setText(f"已套用整理模板：{profile.name}")
+        self.refresh_onboarding()
 
     def _capture_current_profile(self, name: str) -> OrganizeProfile:
         targets = self.current_organize_targets()
