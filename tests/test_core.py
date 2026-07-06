@@ -609,7 +609,7 @@ class OperationFilterTests(unittest.TestCase):
 class MainWindowStartupTests(unittest.TestCase):
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication, QLineEdit
         from photo_dedupe.ui.main_window import MainWindow
 
         app = QApplication.instance() or QApplication([])
@@ -623,6 +623,8 @@ class MainWindowStartupTests(unittest.TestCase):
                 tab_names = [window.main_tabs.tabText(index) for index in range(window.main_tabs.count())]
                 self.assertIn("新手向导", tab_names)
                 self.assertEqual(window.ai_check_button.text(), "检查 AI 配置")
+                self.assertEqual(window.ai_key_input.echoMode(), QLineEdit.EchoMode.Password)
+                self.assertFalse(window.ai_show_key_checkbox.isChecked())
                 window.refresh_onboarding()
                 self.assertGreaterEqual(window.onboarding_table.rowCount(), 6)
                 self.assertIn("选择扫描目录", window.onboarding_summary_label.text())

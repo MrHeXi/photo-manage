@@ -385,6 +385,8 @@ class MainWindow(QMainWindow):
         self.ai_base_url_input = QLineEdit()
         self.ai_model_input = QLineEdit()
         self.ai_key_input = QLineEdit()
+        self.ai_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ai_show_key_checkbox = QCheckBox("显示 Key")
         self.ai_check_button = QPushButton("检查 AI 配置")
         self.ai_analyze_button = QPushButton("AI 判断当前图片")
         self.ai_batch_button = QPushButton("AI 判断当前分组")
@@ -711,6 +713,11 @@ class MainWindow(QMainWindow):
         export_history_button.clicked.connect(self.export_history)
         save_ai_button = QPushButton("保存 AI 配置")
         save_ai_button.clicked.connect(self.save_ai_settings)
+        self.ai_show_key_checkbox.stateChanged.connect(
+            lambda state: self.ai_key_input.setEchoMode(
+                QLineEdit.EchoMode.Normal if state else QLineEdit.EchoMode.Password
+            )
+        )
         self.ai_check_button.clicked.connect(self.check_ai_settings)
         self.ai_analyze_button.clicked.connect(self.analyze_selected_image)
         self.ai_batch_button.clicked.connect(self.analyze_current_group)
@@ -1043,6 +1050,7 @@ class MainWindow(QMainWindow):
         ai_layout.addWidget(self.ai_model_input)
         ai_layout.addWidget(QLabel("API Key"))
         ai_layout.addWidget(self.ai_key_input)
+        ai_layout.addWidget(self.ai_show_key_checkbox)
         ai_buttons = QHBoxLayout()
         ai_buttons.addWidget(save_ai_button)
         ai_buttons.addWidget(self.ai_check_button)
