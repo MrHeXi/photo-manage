@@ -874,6 +874,13 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertTrue(window.duplicate_workspace.isAncestorOf(window.ai_analyze_button))
                 self.assertTrue(window.duplicate_workspace.isAncestorOf(window.ai_batch_button))
                 self.assertEqual(window.status_label.parentWidget(), window.statusBar())
+                self.assertFalse(window.progress.isVisible())
+                window._show_task_progress(10, 3)
+                self.assertTrue(window.progress.isVisible())
+                self.assertEqual(window.progress.maximum(), 10)
+                self.assertEqual(window.progress.value(), 3)
+                window._hide_task_progress()
+                self.assertFalse(window.progress.isVisible())
                 self.assertEqual(window.organize_preview_table.columnCount(), 6)
                 self.assertEqual(
                     window.organize_preview_table.editTriggers(),

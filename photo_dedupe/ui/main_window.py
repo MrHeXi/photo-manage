@@ -470,6 +470,7 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("GlobalStatusText")
         self.progress = QProgressBar()
         self.progress.setFixedWidth(190)
+        self.progress.setVisible(False)
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.health_log_path = default_log_path()
@@ -506,6 +507,15 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         return reply == QMessageBox.StandardButton.Yes
+
+    def _show_task_progress(self, maximum: int, value: int = 0) -> None:
+        safe_maximum = max(maximum, 1)
+        self.progress.setMaximum(safe_maximum)
+        self.progress.setValue(min(max(value, 0), safe_maximum))
+        self.progress.setVisible(True)
+
+    def _hide_task_progress(self) -> None:
+        self.progress.setVisible(False)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         close_reasons = self._close_warning_reasons()
@@ -719,8 +729,7 @@ class MainWindow(QMainWindow):
         status = format_restore_status(offset_groups, self.restored_total_groups)
         self.status_label.setText(status)
         self.group_status_label.setText(status)
-        self.progress.setMaximum(max(self.restored_total_groups, 1))
-        self.progress.setValue(min(offset_groups, max(self.restored_total_groups, 1)))
+        self._show_task_progress(self.restored_total_groups, offset_groups)
         self.history_state = status
         self.refresh_health_diagnostics()
         self.restore_worker = RestoreSessionWorker(
@@ -747,6 +756,7 @@ class MainWindow(QMainWindow):
         self.start_restore_session(session_id=self.restored_session_id, offset_groups=self.restored_loaded_groups)
 
     def on_restore_failed(self, message: str) -> None:
+        self._hide_task_progress()
         self.status_label.setText("启动恢复失败")
         self.group_status_label.setText(f"历史结果加载失败：{message}")
         self.history_state = f"历史结果加载失败：{message}"
@@ -754,6 +764,7 @@ class MainWindow(QMainWindow):
 
     def on_restore_finished(self, session, payload) -> None:  # type: ignore[override]
         if session is None:
+            self._hide_task_progress()
             self.status_label.setText("准备就绪")
             self.group_status_label.setText(f"当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
             self.history_state = "当前没有可恢复的扫描结果"
@@ -779,8 +790,7 @@ class MainWindow(QMainWindow):
             merged = groups if offset_groups == 0 else [*self.groups, *groups]
             self.on_scan_finished(merged, restored=True)
             self.restored_loaded_groups = min(offset_groups + len(groups), total_groups)
-            self.progress.setMaximum(max(total_groups, 1))
-            self.progress.setValue(self.restored_loaded_groups)
+            self._show_task_progress(total_groups, self.restored_loaded_groups)
             if self.restored_loaded_groups < total_groups:
                 self.load_more_groups_button.setEnabled(True)
                 self.load_more_groups_button.setText(
@@ -802,6 +812,7 @@ class MainWindow(QMainWindow):
             self.group_status_label.setText(f"当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
             self.history_state = "当前没有可恢复的扫描结果"
             self.load_more_groups_button.setEnabled(False)
+        self._hide_task_progress()
         self.refresh_health_diagnostics()
         self.refresh_onboarding()
 
@@ -3091,7 +3102,7 @@ class MainWindow(QMainWindow):
         self.group_detail_summary_label.setText("扫描完成后，这里会显示当前重复分组的空间、目录和推荐保留摘要。")
         self.preview_label.setText("扫描中")
         self.detail_label.clear()
-        self.progress.setValue(0)
+        self._show_task_progress(1, 0)
         self.status_label.setText(format_scan_start(len(roots)))
         self.history_state = "正在执行新扫描"
         self.refresh_health_diagnostics()
@@ -3123,8 +3134,7 @@ class MainWindow(QMainWindow):
         formatted = format_progress_message(message, current, total)
         self.status_label.setText(formatted)
         self.history_state = formatted
-        self.progress.setMaximum(max(total, 1))
-        self.progress.setValue(min(max(current, 0), max(total, 1)))
+        self._show_task_progress(total, current)
 
     def on_scan_finished(self, groups: list[DuplicateGroup], restored: bool = False) -> None:
         self.groups = groups
@@ -3152,7 +3162,7 @@ class MainWindow(QMainWindow):
             self.history_state = "新扫描已完成"
             self.status_label.setText(f"扫描完成：发现 {len(groups)} 组重复/相似文件")
         self.preview_label.setText("选择图片以预览")
-        self.progress.setValue(self.progress.maximum())
+        self._hide_task_progress()
         self.scan_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         if self.history_loaded and not restored:
@@ -3161,6 +3171,7 @@ class MainWindow(QMainWindow):
         self.refresh_onboarding()
 
     def on_scan_failed(self, message: str) -> None:
+        self._hide_task_progress()
         QMessageBox.critical(self, "扫描失败", message)
         self.status_label.setText("扫描失败")
         self.history_state = f"扫描失败：{message}"
@@ -4054,6 +4065,7 @@ class MainWindow(QMainWindow):
         self.ai_analyze_button.setEnabled(False)
         self.ai_batch_button.setEnabled(False)
         self.status_label.setText(f"AI 准备分析 {len(paths)} 张图片")
+        self._show_task_progress(len(paths), 0)
         self.ai_worker = AiWorker(paths, AiConfig(base_url=base_url, api_key=api_key, model=model))
         self.ai_worker.progress_changed.connect(self.on_ai_progress)
         self.ai_worker.finished_analysis.connect(self.on_ai_finished)
@@ -4063,8 +4075,7 @@ class MainWindow(QMainWindow):
 
     def on_ai_progress(self, message: str, current: int, total: int) -> None:
         self.status_label.setText(message)
-        self.progress.setMaximum(max(total, 1))
-        self.progress.setValue(current)
+        self._show_task_progress(total, current)
 
     def on_ai_finished(self, path: Path, result) -> None:
         model = self.ai_model_input.text().strip()
@@ -4072,12 +4083,14 @@ class MainWindow(QMainWindow):
         self.refresh_ai_results()
 
     def on_ai_batch_finished(self, count: int) -> None:
+        self._hide_task_progress()
         self.ai_analyze_button.setEnabled(True)
         self.ai_batch_button.setEnabled(True)
         self.status_label.setText(f"AI 分析完成：{count} 张图片")
         QMessageBox.information(self, "AI 分析完成", f"已完成 {count} 张图片分析。")
 
     def on_ai_failed(self, message: str) -> None:
+        self._hide_task_progress()
         self.ai_analyze_button.setEnabled(True)
         self.ai_batch_button.setEnabled(True)
         self.status_label.setText("AI 分析失败")
