@@ -833,7 +833,8 @@ class MainWindowStartupTests(unittest.TestCase):
 
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication, QAbstractItemView, QLineEdit, QPushButton, QScrollArea
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication, QAbstractItemView, QLineEdit, QMessageBox, QPushButton, QScrollArea
         from photo_dedupe.ui.main_window import MainWindow, find_support_document
 
         app = QApplication.instance() or QApplication([])
@@ -867,6 +868,26 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertLessEqual(window.session_table.maximumHeight(), 220)
                 self.assertFalse(window.load_session_button.isEnabled())
                 self.assertFalse(window.delete_session_button.isEnabled())
+                for table in (
+                    window.file_table,
+                    window.directory_detail_table,
+                    window.operations_table,
+                    window.ai_table,
+                    window.organize_preview_table,
+                ):
+                    self.assertFalse(table.wordWrap())
+                    self.assertEqual(table.verticalHeader().defaultSectionSize(), 32)
+                    self.assertEqual(
+                        table.editTriggers(),
+                        QAbstractItemView.EditTrigger.NoEditTriggers,
+                    )
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as question:
+                    self.assertFalse(window._confirm_action("确认操作", "是否继续？"))
+                self.assertEqual(
+                    question.call_args.args[3],
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                self.assertEqual(question.call_args.args[4], QMessageBox.StandardButton.No)
                 self.assertEqual(window.ai_check_button.text(), "检查 AI 配置")
                 self.assertEqual(window.ai_key_input.echoMode(), QLineEdit.EchoMode.Password)
                 self.assertFalse(window.ai_show_key_checkbox.isChecked())
@@ -910,6 +931,17 @@ class MainWindowStartupTests(unittest.TestCase):
                 window.refresh_group_list()
                 self.assertIn("清空筛选", window.group_status_label.text())
                 window.group_search_input.clear()
+                self.assertEqual(window.file_table.rowCount(), 2)
+                keep_item = window.file_table.item(0, 0)
+                self.assertTrue(keep_item.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+                self.assertFalse(keep_item.flags() & Qt.ItemFlag.ItemIsEditable)
+                previous_state = keep_item.checkState()
+                keep_item.setCheckState(
+                    Qt.CheckState.Unchecked
+                    if previous_state == Qt.CheckState.Checked
+                    else Qt.CheckState.Checked
+                )
+                self.assertNotEqual(keep_item.checkState(), previous_state)
                 self.assertEqual(window._close_warning_reasons(), [])
                 window.organize_preview_items = [
                     OrganizePreviewItem(Path("D:/source/photo.jpg"), "photo", "图片格式", Path("E:/target/photo.jpg"))

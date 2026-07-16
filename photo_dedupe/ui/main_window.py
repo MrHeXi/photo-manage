@@ -212,6 +212,15 @@ def section_label(text: str) -> QLabel:
     return label
 
 
+def configure_data_table(table: QTableWidget) -> None:
+    table.setAlternatingRowColors(True)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+    table.setWordWrap(False)
+    table.verticalHeader().setDefaultSectionSize(32)
+
+
 class ScanWorker(QThread):
     progress_changed = Signal(str, int, int)
     finished_groups = Signal(object)
@@ -486,14 +495,23 @@ class MainWindow(QMainWindow):
             self.status_label.setText("正在加载最近数据")
             QTimer.singleShot(0, self._finish_startup)
 
+    def _confirm_action(self, title: str, message: str) -> bool:
+        reply = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
         close_reasons = self._close_warning_reasons()
         if close_reasons:
             message = "当前还有未完成或未执行的内容：\n\n"
             message += "\n".join(f"- {reason}" for reason in close_reasons)
             message += "\n\n确认退出？"
-            reply = QMessageBox.question(self, "确认退出", message)
-            if reply != QMessageBox.StandardButton.Yes:
+            if not self._confirm_action("确认退出", message):
                 event.ignore()
                 self.status_label.setText("已取消退出")
                 return
@@ -1017,10 +1035,7 @@ class MainWindow(QMainWindow):
         self.directory_detail_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.directory_detail_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.directory_detail_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.directory_detail_table.setAlternatingRowColors(True)
-        self.directory_detail_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.directory_detail_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.directory_detail_table.verticalHeader().setDefaultSectionSize(30)
+        configure_data_table(self.directory_detail_table)
         self.directory_detail_table.itemSelectionChanged.connect(self.on_directory_detail_selection_changed)
         self.directory_hint_label.setWordWrap(True)
         self.directory_hint_label.setText("按磁盘和目录浏览参与重复的文件，右侧仍会显示原分组明细。")
@@ -1074,9 +1089,7 @@ class MainWindow(QMainWindow):
         self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.file_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         self.file_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
-        self.file_table.setAlternatingRowColors(True)
-        self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.file_table.verticalHeader().setDefaultSectionSize(30)
+        configure_data_table(self.file_table)
         self.file_table.itemSelectionChanged.connect(self.preview_selected_file)
         self.file_table.itemChanged.connect(self.on_keep_item_changed)
 
@@ -1137,10 +1150,7 @@ class MainWindow(QMainWindow):
         self.operations_table.setHorizontalHeaderLabels(["状态", "动作", "时间", "原路径", "当前位置", "ID"])
         self.operations_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.operations_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.operations_table.setAlternatingRowColors(True)
-        self.operations_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.operations_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.operations_table.verticalHeader().setDefaultSectionSize(30)
+        configure_data_table(self.operations_table)
         self.operations_table.setColumnHidden(5, True)
 
         ops_buttons = QHBoxLayout()
@@ -1171,23 +1181,13 @@ class MainWindow(QMainWindow):
 
         self.history_table.setHorizontalHeaderLabels(["文件名", "大小", "修改时间", "尺寸", "SHA-256", "图片指纹", "路径"])
         self.history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
-        self.history_table.setAlternatingRowColors(True)
-        self.history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.history_table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        self.history_table.setWordWrap(False)
-        self.history_table.verticalHeader().setDefaultSectionSize(32)
+        configure_data_table(self.history_table)
 
         self.session_table.setHorizontalHeaderLabels(["时间", "扫描目录", "分组数", "重复文件数", "占用空间", "预估可省", "ID"])
         self.session_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.session_table.setAlternatingRowColors(True)
-        self.session_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.session_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.session_table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        self.session_table.setWordWrap(False)
+        configure_data_table(self.session_table)
         self.session_table.setMinimumHeight(112)
         self.session_table.setMaximumHeight(220)
-        self.session_table.verticalHeader().setDefaultSectionSize(32)
         self.session_table.setColumnHidden(6, True)
         self.session_table.itemSelectionChanged.connect(self.on_session_selection_changed)
         self.session_table.itemDoubleClicked.connect(self.on_session_item_double_clicked)
@@ -1242,10 +1242,7 @@ class MainWindow(QMainWindow):
         self.ai_table.setHorizontalHeaderLabels(["时间", "模型", "分数", "摘要", "路径"])
         self.ai_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.ai_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.ai_table.setAlternatingRowColors(True)
-        self.ai_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.ai_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.ai_table.verticalHeader().setDefaultSectionSize(30)
+        configure_data_table(self.ai_table)
 
         ai_panel = QWidget()
         ai_panel.setObjectName("ContentPanel")
@@ -1368,10 +1365,7 @@ class MainWindow(QMainWindow):
         self.organize_preview_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.organize_preview_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.organize_preview_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        self.organize_preview_table.setAlternatingRowColors(True)
-        self.organize_preview_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.organize_preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.organize_preview_table.verticalHeader().setDefaultSectionSize(30)
+        configure_data_table(self.organize_preview_table)
 
         organize_panel = QWidget()
         organize_panel.setObjectName("ContentPanel")
@@ -1883,15 +1877,14 @@ class MainWindow(QMainWindow):
             scan_roots=tuple(self._folder_paths()),
             protected_roots=tuple(sorted((normalize_path(path) for path in self.protected_roots), key=str)),
         )
-        answer = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "套用整理模板",
             f"将套用“{profile.name}”，保留当前扫描目录和保护目录，并替换保留规则、整理规则和目标目录。\n\n"
             f"重复待复核目录：{profile.duplicate_destination}\n"
             f"照片目标目录：{profile.photo_target}\n\n"
             "此操作不会移动、回收或删除任何文件。是否继续？",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         self.profile_combo.setCurrentIndex(0)
@@ -1950,13 +1943,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "没有选中方案", "请先选择一个整理方案。")
             return
 
-        answer = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "加载整理方案",
             f"将加载“{profile.name}”，并替换当前扫描目录、保护目录、保留规则和整理目标。\n"
             "此操作不会移动、回收或删除任何文件。是否继续？",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         self.apply_profile(profile)
@@ -1968,8 +1960,7 @@ class MainWindow(QMainWindow):
         if profile is None:
             QMessageBox.information(self, "没有选中方案", "请先选择一个要删除的整理方案。")
             return
-        answer = QMessageBox.question(self, "删除整理方案", f"确认删除整理方案“{profile.name}”？")
-        if answer != QMessageBox.StandardButton.Yes:
+        if not self._confirm_action("删除整理方案", f"确认删除整理方案“{profile.name}”？"):
             return
         self.organize_profiles = remove_profile(self.organize_profiles, profile.name)
         self._save_profiles()
@@ -2432,8 +2423,9 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, group_index)
+                if column <= 2:
+                    item.setToolTip(value)
                 self.directory_detail_table.setItem(row, column, item)
-        self.directory_detail_table.resizeRowsToContents()
         if link.group_indices:
             self.group_list.setCurrentRow(link.group_indices[0])
         peer_dirs = sorted({str(peer.parent) for peer in link.peer_paths})
@@ -2458,8 +2450,9 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 if column == 0 and group_index >= 0:
                     item.setData(Qt.ItemDataRole.UserRole, group_index)
+                if column <= 2:
+                    item.setToolTip(value)
                 self.directory_detail_table.setItem(row, column, item)
-        self.directory_detail_table.resizeRowsToContents()
         self.directory_hint_label.setText(f"{directory} 下共有 {len(files)} 个参与重复的文件。")
 
     def populate_drive_summary(self, drive: str) -> None:
@@ -2483,8 +2476,9 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 if column == 0 and group_index >= 0:
                     item.setData(Qt.ItemDataRole.UserRole, group_index)
+                if column <= 2:
+                    item.setToolTip(value)
                 self.directory_detail_table.setItem(row, column, item)
-        self.directory_detail_table.resizeRowsToContents()
         self.directory_hint_label.setText(f"{drive} 中共有 {len(files)} 个参与重复的文件。")
 
     def on_directory_detail_selection_changed(self) -> None:
@@ -2563,9 +2557,10 @@ class MainWindow(QMainWindow):
                 str(preview_item.target),
             ]
             for column, value in enumerate(values):
-                self.organize_preview_table.setItem(row, column, QTableWidgetItem(value))
-        self.organize_preview_table.resizeRowsToContents()
-
+                table_item = QTableWidgetItem(value)
+                if column >= 3:
+                    table_item.setToolTip(value)
+                self.organize_preview_table.setItem(row, column, table_item)
         self.organize_summary_label.setText(
             f"来自目录树选择的预览：{preview_summary.file_count} 个文件"
             f" | {self._category_counts_text(preview_summary)}"
@@ -2622,18 +2617,14 @@ class MainWindow(QMainWindow):
             return False
 
         if warning_issues:
-            reply = QMessageBox.question(
-                self,
+            return self._confirm_action(
                 "扫描前提醒",
                 (
                     "扫描目录存在一些可能影响效率或结果的问题：\n\n"
                     f"{self._format_scan_root_issues(warning_issues)}\n\n"
                     "是否仍然继续扫描？"
                 ),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
             )
-            return reply == QMessageBox.StandardButton.Yes
 
         return True
 
@@ -2750,9 +2741,10 @@ class MainWindow(QMainWindow):
                 str(item.target),
             ]
             for column, value in enumerate(values):
-                self.organize_preview_table.setItem(row, column, QTableWidgetItem(value))
-        self.organize_preview_table.resizeRowsToContents()
-
+                table_item = QTableWidgetItem(value)
+                if column >= 3:
+                    table_item.setToolTip(value)
+                self.organize_preview_table.setItem(row, column, table_item)
         summary_text = (
             f"预览共 {preview_summary.file_count} 个文件"
             f" | {self._category_counts_text(preview_summary)}"
@@ -2775,14 +2767,11 @@ class MainWindow(QMainWindow):
             return
 
         summary = summarize_organize_preview(self.organize_preview_items)
-        reply = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "确认整理",
             self._organize_execution_message(summary),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         try:
@@ -3011,7 +3000,7 @@ class MainWindow(QMainWindow):
         self.updating_keep_checks = True
         for row, record in enumerate(group.records):
             keep_item = QTableWidgetItem()
-            keep_item.setFlags(keep_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            keep_item.setFlags((keep_item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
             checked = record.keep_selected if manual_selection else (record.path in keep_paths)
             keep_item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
             keep_item.setData(Qt.ItemDataRole.UserRole, record)
@@ -3022,7 +3011,9 @@ class MainWindow(QMainWindow):
                 protected_item.setForeground(QColor("#1a7f37"))
                 protected_item.setToolTip("保护目录内文件不会被批量移动或回收。")
             self.file_table.setItem(row, 1, protected_item)
-            self.file_table.setItem(row, 2, QTableWidgetItem(record.name))
+            name_item = QTableWidgetItem(record.name)
+            name_item.setToolTip(record.name)
+            self.file_table.setItem(row, 2, name_item)
             self.file_table.setItem(row, 3, QTableWidgetItem(format_size(record.size)))
             modified = datetime.fromtimestamp(record.modified_at).strftime("%Y-%m-%d %H:%M")
             self.file_table.setItem(row, 4, QTableWidgetItem(modified))
@@ -3036,13 +3027,15 @@ class MainWindow(QMainWindow):
             else:
                 reason = keep_reasons.get(record.path, "")
             reason_item = QTableWidgetItem(reason)
+            reason_item.setToolTip(reason)
             if reason.startswith("建议保留") or reason.startswith("保护目录"):
                 reason_item.setForeground(QColor("#1a7f37"))
             self.file_table.setItem(row, 7, reason_item)
-            self.file_table.setItem(row, 8, QTableWidgetItem(str(record.path)))
+            path_item = QTableWidgetItem(str(record.path))
+            path_item.setToolTip(str(record.path))
+            self.file_table.setItem(row, 8, path_item)
             self._add_thumbnail(record, row)
         self.updating_keep_checks = False
-        self.file_table.resizeRowsToContents()
         self.file_table.selectRow(0)
 
     def _add_thumbnail(self, record: FileRecord, row: int) -> None:
@@ -3330,12 +3323,11 @@ class MainWindow(QMainWindow):
             self.destination,
             destination_free_bytes=destination_free_bytes,
         )
-        reply = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "确认处理",
             format_processing_confirmation(risk_summary),
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         try:
@@ -3368,7 +3360,6 @@ class MainWindow(QMainWindow):
         self.operations_table.setRowCount(len(operations))
         for row, operation in enumerate(operations):
             self._set_operation_row(row, operation)
-        self.operations_table.resizeRowsToContents()
 
     def _filtered_operations(self) -> tuple[list[OperationRecord], list[OperationRecord]]:
         all_operations = self.database.list_operations(limit=10000)
@@ -3569,12 +3560,11 @@ class MainWindow(QMainWindow):
             return
         session_id = int(id_item.text())
         created_text = created_item.text() if created_item is not None else str(session_id)
-        reply = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "确认删除",
             f"将删除这条扫描任务记录及其保存的重复分组结果：\n{created_text}\n\n此操作不会删除你的实际文件，是否继续？",
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         self.database.delete_scan_session(session_id)
@@ -3597,12 +3587,11 @@ class MainWindow(QMainWindow):
         self.status_label.setText("已删除选中的扫描任务")
 
     def clear_history(self) -> None:
-        reply = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "确认清空",
             "这会清空扫描历史和缓存的文件指纹，不会删除你的实际文件。是否继续？",
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
         self.database.clear_scanned_files()
         self.database.clear_scan_sessions()
@@ -3634,6 +3623,8 @@ class MainWindow(QMainWindow):
             item = QTableWidgetItem(value)
             if column == 0:
                 item.setData(Qt.ItemDataRole.UserRole, operation.id)
+            if column in (2, 3, 4):
+                item.setToolTip(value)
             self.operations_table.setItem(row, column, item)
 
     def selected_operation(self) -> OperationRecord | None:
@@ -3659,12 +3650,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "不可撤销", "移动到回收站的记录请在 Windows 回收站中还原。")
             return
 
-        reply = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "确认撤销",
             f"将文件移回原位置：\n{operation.source_path}",
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         try:
@@ -3691,13 +3681,12 @@ class MainWindow(QMainWindow):
             )
             return
 
-        reply = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "确认批量撤销",
             f"将撤销当前筛选结果中的 {len(candidates)} 条普通移动记录。\n"
             "已经撤销、回收站和不在当前筛选结果中的记录不会处理。是否继续？",
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         result = undo_move_operations(candidates, self.database)
@@ -3905,8 +3894,10 @@ class MainWindow(QMainWindow):
                 str(record.path),
             ]
             for column, value in enumerate(values):
-                self.ai_table.setItem(row, column, QTableWidgetItem(value))
-        self.ai_table.resizeRowsToContents()
+                item = QTableWidgetItem(value)
+                if column in (0, 3, 4):
+                    item.setToolTip(value)
+                self.ai_table.setItem(row, column, item)
 
     def export_ai_results(self) -> None:
         target, _ = QFileDialog.getSaveFileName(self, "导出 AI 结果", "ai-results.csv", "CSV Files (*.csv)")
@@ -3932,12 +3923,11 @@ class MainWindow(QMainWindow):
         }
         rule = rule_map.get(rule_label, "date_month")
 
-        reply = QMessageBox.question(
-            self,
+        confirmed = self._confirm_action(
             "确认整理",
             f"将按“{rule_label}”移动文件到：\n{self.destination}",
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         total_moved = 0
