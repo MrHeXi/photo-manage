@@ -965,10 +965,10 @@ class MainWindow(QMainWindow):
         ):
             target_input.textChanged.connect(self.invalidate_organize_preview)
 
-        folder_buttons = QHBoxLayout()
-        folder_buttons.addWidget(add_button)
-        folder_buttons.addWidget(remove_button)
-        folder_buttons.addWidget(protect_button)
+        folder_buttons = QGridLayout()
+        folder_buttons.addWidget(add_button, 0, 0, 1, 2)
+        folder_buttons.addWidget(remove_button, 1, 0)
+        folder_buttons.addWidget(protect_button, 1, 1)
         scan_buttons = QHBoxLayout()
         scan_buttons.addWidget(self.scan_button)
         scan_buttons.addWidget(self.cancel_button)
@@ -1074,14 +1074,19 @@ class MainWindow(QMainWindow):
         groups_layout.addWidget(self.group_type_filter_combo)
         groups_layout.addWidget(self.group_sort_combo)
         groups_layout.addWidget(self.group_search_input)
-        group_size_filter_row = QHBoxLayout()
-        group_size_filter_row.addWidget(QLabel("最小可整理空间"))
-        group_size_filter_row.addWidget(self.group_min_size_input)
-        group_size_filter_row.addWidget(self.group_min_size_unit_combo)
-        group_size_filter_row.addWidget(QLabel("最大可整理空间"))
-        group_size_filter_row.addWidget(self.group_max_size_input)
-        group_size_filter_row.addWidget(self.group_max_size_unit_combo)
-        groups_layout.addLayout(group_size_filter_row)
+        self.group_min_size_unit_combo.setFixedWidth(64)
+        self.group_max_size_unit_combo.setFixedWidth(64)
+        group_size_filters = QGridLayout()
+        group_size_filters.setHorizontalSpacing(6)
+        group_size_filters.setVerticalSpacing(6)
+        group_size_filters.addWidget(QLabel("最小可整理空间"), 0, 0)
+        group_size_filters.addWidget(self.group_min_size_input, 0, 1)
+        group_size_filters.addWidget(self.group_min_size_unit_combo, 0, 2)
+        group_size_filters.addWidget(QLabel("最大可整理空间"), 1, 0)
+        group_size_filters.addWidget(self.group_max_size_input, 1, 1)
+        group_size_filters.addWidget(self.group_max_size_unit_combo, 1, 2)
+        group_size_filters.setColumnStretch(1, 1)
+        groups_layout.addLayout(group_size_filters)
         groups_layout.addWidget(clear_group_filters_button)
         groups_layout.addWidget(export_report_button)
         groups_layout.addWidget(self.load_more_groups_button)
@@ -1099,31 +1104,46 @@ class MainWindow(QMainWindow):
         self.thumbnail_list.setIconSize(QPixmap(128, 128).size())
         self.thumbnail_list.setResizeMode(QListView.ResizeMode.Adjust)
         self.thumbnail_list.setMovement(QListView.Movement.Static)
-        self.thumbnail_list.setMaximumHeight(180)
+        self.thumbnail_list.setMaximumHeight(140)
+        self.thumbnail_list.setVisible(False)
         self.thumbnail_list.itemClicked.connect(self.select_thumbnail_record)
 
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumHeight(280)
+        self.preview_label.setMinimumHeight(180)
         self.preview_label.setScaledContents(False)
-        self.video_widget.setMinimumHeight(280)
+        self.video_widget.setMinimumHeight(180)
         self.preview_stack.addWidget(self.preview_label)
         self.preview_stack.addWidget(self.video_widget)
         self.detail_label.setWordWrap(True)
+        self.detail_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.detail_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         right = QWidget()
         right.setObjectName("DetailPanel")
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(14, 14, 14, 14)
-        right_layout.setSpacing(10)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        duplicate_results = QWidget()
+        duplicate_results.setObjectName("DuplicateResults")
+        duplicate_results_layout = QVBoxLayout(duplicate_results)
+        duplicate_results_layout.setContentsMargins(12, 12, 12, 12)
+        duplicate_results_layout.setSpacing(8)
         self.group_detail_summary_label.setWordWrap(True)
-        right_layout.addWidget(self.group_detail_summary_label)
-        right_layout.addWidget(self.file_table)
-        right_layout.addWidget(self.thumbnail_list)
-        right_layout.addWidget(self.retention_hint_label)
+        duplicate_results_layout.addWidget(self.group_detail_summary_label)
+        duplicate_results_layout.addWidget(self.file_table, 1)
+        duplicate_results_layout.addWidget(self.thumbnail_list)
+
+        duplicate_controls = QWidget()
+        duplicate_controls.setObjectName("DuplicateControls")
+        duplicate_controls_layout = QVBoxLayout(duplicate_controls)
+        duplicate_controls_layout.setContentsMargins(12, 12, 12, 12)
+        duplicate_controls_layout.setSpacing(8)
+        duplicate_controls_layout.addWidget(self.retention_hint_label)
         self.bulk_rule_hint_label.setWordWrap(True)
-        right_layout.addWidget(section_label("批量保留规则"))
-        right_layout.addWidget(self.bulk_keep_rule_combo)
-        right_layout.addWidget(self.bulk_keep_keyword_input)
+        duplicate_controls_layout.addWidget(section_label("批量保留规则"))
+        duplicate_controls_layout.addWidget(self.bulk_keep_rule_combo)
+        duplicate_controls_layout.addWidget(self.bulk_keep_keyword_input)
         bulk_rule_actions = QHBoxLayout()
         preview_rule_button = QPushButton("预览应用规则")
         preview_rule_button.clicked.connect(self.preview_bulk_keep_rule)
@@ -1132,22 +1152,64 @@ class MainWindow(QMainWindow):
         apply_rule_button.setObjectName("PrimaryButton")
         bulk_rule_actions.addWidget(preview_rule_button)
         bulk_rule_actions.addWidget(apply_rule_button)
-        right_layout.addLayout(bulk_rule_actions)
-        right_layout.addWidget(self.bulk_rule_hint_label)
-        inspection_actions = QHBoxLayout()
+        duplicate_controls_layout.addLayout(bulk_rule_actions)
+        duplicate_controls_layout.addWidget(self.bulk_rule_hint_label)
+        duplicate_controls_layout.addWidget(section_label("检查与处理"))
+        inspection_actions = QGridLayout()
         self.ai_analyze_button.setToolTip("判断当前选中的图片；结果会显示在“AI 判断”页。")
         self.ai_batch_button.setToolTip("判断当前重复分组中的图片；结果会显示在“AI 判断”页。")
-        inspection_actions.addWidget(compare_images_button)
-        inspection_actions.addWidget(reveal_button)
-        inspection_actions.addWidget(self.ai_analyze_button)
-        inspection_actions.addWidget(self.ai_batch_button)
-        right_layout.addLayout(inspection_actions)
-        processing_actions = QHBoxLayout()
-        processing_actions.addWidget(self.action_combo, 1)
-        processing_actions.addWidget(move_button)
-        right_layout.addLayout(processing_actions)
-        right_layout.addWidget(self.preview_stack)
-        right_layout.addWidget(self.detail_label)
+        inspection_actions.addWidget(compare_images_button, 0, 0)
+        inspection_actions.addWidget(reveal_button, 0, 1)
+        inspection_actions.addWidget(self.ai_analyze_button, 1, 0)
+        inspection_actions.addWidget(self.ai_batch_button, 1, 1)
+        duplicate_controls_layout.addLayout(inspection_actions)
+        duplicate_controls_layout.addWidget(self.action_combo)
+        duplicate_controls_layout.addWidget(move_button)
+        duplicate_controls_layout.addStretch(1)
+
+        duplicate_controls_scroll = QScrollArea()
+        duplicate_controls_scroll.setObjectName("DuplicateControlsScroll")
+        duplicate_controls_scroll.setWidgetResizable(True)
+        duplicate_controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        duplicate_controls_scroll.setMinimumWidth(230)
+        duplicate_controls_scroll.setWidget(duplicate_controls)
+
+        duplicate_preview = QWidget()
+        duplicate_preview.setObjectName("DuplicatePreview")
+        duplicate_preview_layout = QVBoxLayout(duplicate_preview)
+        duplicate_preview_layout.setContentsMargins(12, 12, 12, 12)
+        duplicate_preview_layout.setSpacing(8)
+        duplicate_preview_layout.addWidget(section_label("文件预览"))
+        duplicate_preview_layout.addWidget(self.preview_stack, 1)
+        file_detail_scroll = QScrollArea()
+        file_detail_scroll.setObjectName("FileDetailScroll")
+        file_detail_scroll.setWidgetResizable(True)
+        file_detail_scroll.setMaximumHeight(130)
+        file_detail_scroll.setWidget(self.detail_label)
+        duplicate_preview_layout.addWidget(file_detail_scroll)
+
+        self.duplicate_review_splitter = QSplitter()
+        self.duplicate_review_splitter.setObjectName("DuplicateReviewSplitter")
+        self.duplicate_review_splitter.addWidget(duplicate_controls_scroll)
+        self.duplicate_review_splitter.addWidget(duplicate_preview)
+        self.duplicate_review_splitter.setChildrenCollapsible(False)
+        self.duplicate_review_splitter.setHandleWidth(8)
+        self.duplicate_review_splitter.setStretchFactor(0, 0)
+        self.duplicate_review_splitter.setStretchFactor(1, 1)
+        self.duplicate_review_splitter.setSizes([300, 420])
+        duplicate_preview.setMinimumWidth(240)
+
+        self.duplicate_content_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.duplicate_content_splitter.setObjectName("DuplicateContentSplitter")
+        self.duplicate_content_splitter.addWidget(duplicate_results)
+        self.duplicate_content_splitter.addWidget(self.duplicate_review_splitter)
+        self.duplicate_content_splitter.setChildrenCollapsible(False)
+        self.duplicate_content_splitter.setHandleWidth(8)
+        self.duplicate_content_splitter.setStretchFactor(0, 1)
+        self.duplicate_content_splitter.setStretchFactor(1, 1)
+        self.duplicate_content_splitter.setSizes([340, 300])
+        duplicate_results.setMinimumHeight(180)
+        right_layout.addWidget(self.duplicate_content_splitter)
 
         self.operations_table.setHorizontalHeaderLabels(["状态", "动作", "时间", "原路径", "当前位置", "ID"])
         self.operations_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
@@ -1459,9 +1521,9 @@ class MainWindow(QMainWindow):
         self.duplicate_workspace.setStretchFactor(0, 0)
         self.duplicate_workspace.setStretchFactor(1, 0)
         self.duplicate_workspace.setStretchFactor(2, 1)
-        self.duplicate_workspace.setSizes([280, 320, 680])
+        self.duplicate_workspace.setSizes([260, 300, 720])
         groups_panel.setMinimumWidth(280)
-        right.setMinimumWidth(440)
+        right.setMinimumWidth(500)
 
         self.main_tabs = QTabWidget()
         self.main_tabs.setObjectName("MainNavigation")
@@ -1583,27 +1645,38 @@ class MainWindow(QMainWindow):
             #Sidebar {
                 background: #fbfbfc;
             }
-            #SidebarScroll, #OrganizerSettingsScroll {
+            #SidebarScroll, #OrganizerSettingsScroll, #DuplicateControlsScroll, #FileDetailScroll {
                 border: none;
                 background: transparent;
             }
-            #SidebarScroll > QWidget, #OrganizerSettingsScroll > QWidget {
+            #SidebarScroll > QWidget, #OrganizerSettingsScroll > QWidget,
+            #DuplicateControlsScroll > QWidget, #FileDetailScroll > QWidget {
                 background: transparent;
             }
-            #OrganizerSettings {
+            #OrganizerSettings, #DuplicateControls {
                 background: #fbfbfc;
             }
-            #OrganizerPreview {
+            #OrganizerPreview, #DuplicateResults, #DuplicatePreview {
                 background: #ffffff;
             }
-            #DuplicateWorkspace, #OrganizerWorkspace {
+            #FileDetailScroll {
+                background: #fbfbfc;
+                border-top: 1px solid #eaeef2;
+            }
+            #DuplicateWorkspace, #OrganizerWorkspace,
+            #DuplicateContentSplitter, #DuplicateReviewSplitter {
                 background: #f6f7f9;
             }
-            #DuplicateWorkspace::handle, #OrganizerWorkspace::handle {
+            #DuplicateWorkspace::handle, #OrganizerWorkspace::handle,
+            #DuplicateContentSplitter::handle, #DuplicateReviewSplitter::handle {
                 background: #d8dee4;
                 margin: 0 3px;
             }
-            #DuplicateWorkspace::handle:hover, #OrganizerWorkspace::handle:hover {
+            #DuplicateContentSplitter::handle {
+                margin: 3px 0;
+            }
+            #DuplicateWorkspace::handle:hover, #OrganizerWorkspace::handle:hover,
+            #DuplicateContentSplitter::handle:hover, #DuplicateReviewSplitter::handle:hover {
                 background: #54aeff;
             }
             QPushButton {
@@ -2293,7 +2366,7 @@ class MainWindow(QMainWindow):
 
         if self.group_list.count() == 0:
             self.file_table.setRowCount(0)
-            self.thumbnail_list.clear()
+            self._clear_thumbnails()
             self.preview_label.setText("选择图片以预览")
             self.detail_label.setText("当前没有可预览的文件。")
             self.group_detail_summary_label.setText("选择一个重复分组后，这里会显示占用空间、预估可省、涉及磁盘/目录和推荐保留原因。")
@@ -2941,7 +3014,7 @@ class MainWindow(QMainWindow):
         self.rebuild_directory_browser()
         self.refresh_group_list()
         self.file_table.setRowCount(0)
-        self.thumbnail_list.clear()
+        self._clear_thumbnails()
         self.group_detail_summary_label.setText("")
         self.directory_detail_table.setRowCount(0)
         self.preview_label.setPixmap(QPixmap())
@@ -3099,7 +3172,7 @@ class MainWindow(QMainWindow):
         if self.keep_state_dirty:
             self._persist_keep_state()
         self.file_table.setRowCount(0)
-        self.thumbnail_list.clear()
+        self._clear_thumbnails()
         if not current:
             self.group_detail_summary_label.setText("")
             return
@@ -3157,6 +3230,10 @@ class MainWindow(QMainWindow):
         self.updating_keep_checks = False
         self.file_table.selectRow(0)
 
+    def _clear_thumbnails(self) -> None:
+        self.thumbnail_list.clear()
+        self.thumbnail_list.setVisible(False)
+
     def _add_thumbnail(self, record: FileRecord, row: int) -> None:
         if not is_image(record.path) or not record.path.exists():
             return
@@ -3168,6 +3245,7 @@ class MainWindow(QMainWindow):
         item.setToolTip(str(record.path))
         item.setData(Qt.ItemDataRole.UserRole, row)
         self.thumbnail_list.addItem(item)
+        self.thumbnail_list.setVisible(True)
 
     def select_thumbnail_record(self, item: QListWidgetItem) -> None:
         row = item.data(Qt.ItemDataRole.UserRole)
@@ -3666,7 +3744,7 @@ class MainWindow(QMainWindow):
         self.directory_detail_table.setRowCount(0)
         self.file_table.setRowCount(0)
         self.group_detail_summary_label.setText("正在加载历史扫描任务...")
-        self.thumbnail_list.clear()
+        self._clear_thumbnails()
         self.preview_label.setPixmap(QPixmap())
         self.preview_label.setText("选择图片以预览")
         self.detail_label.clear()
@@ -3702,7 +3780,7 @@ class MainWindow(QMainWindow):
             self.directory_tree.clear()
             self.directory_detail_table.setRowCount(0)
             self.file_table.setRowCount(0)
-            self.thumbnail_list.clear()
+            self._clear_thumbnails()
             self.group_detail_summary_label.setText("")
             self.group_status_label.setText(f"已删除当前扫描任务，当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
             self.load_more_groups_button.setEnabled(False)
@@ -3728,7 +3806,7 @@ class MainWindow(QMainWindow):
         self.session_table.setRowCount(0)
         self.session_summary_label.setText("这里会显示历史扫描任务。")
         self.file_table.setRowCount(0)
-        self.thumbnail_list.clear()
+        self._clear_thumbnails()
         self.group_detail_summary_label.setText("")
         self.refresh_history()
         self.status_label.setText("扫描历史已清空")
