@@ -233,7 +233,7 @@ def profile_summary(profile: OrganizeProfile) -> str:
     return (
         f"扫描目录 {len(profile.scan_roots)} 个，保护目录 {len(profile.protected_roots)} 个，"
         f"保留策略：{profile.keep_strategy}，批量规则：{profile.bulk_keep_rule}，"
-        f"整理规则：{profile.organize_rule}"
+        f"归档方式：{profile.organize_rule}"
     )
 
 

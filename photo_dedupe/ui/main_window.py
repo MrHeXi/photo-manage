@@ -74,7 +74,6 @@ from photo_dedupe.core.organizer import (
     classify_group_category,
     describe_organize_preview_item,
     execute_organize_preview,
-    organize_files,
     summarize_organize_preview,
 )
 from photo_dedupe.core.organize_profiles import (
@@ -381,6 +380,7 @@ class MainWindow(QMainWindow):
             other_root=Path(self.database.get_setting("target_other_root", str(self.destination / "Others"))),
         )
         self.organize_preview_items: list[OrganizePreviewItem] = []
+        self.organize_preview_signature: tuple | None = None
         self.organize_profiles: list[OrganizeProfile] = []
 
         self.folder_list = QListWidget()
@@ -431,6 +431,8 @@ class MainWindow(QMainWindow):
         self.organize_video_input = QLineEdit()
         self.organize_document_input = QLineEdit()
         self.organize_other_input = QLineEdit()
+        self.organize_preview_button = QPushButton("预览整理结果")
+        self.organize_execute_button = QPushButton("执行预览中的整理")
         self.ai_base_url_input = QLineEdit()
         self.ai_model_input = QLineEdit()
         self.ai_key_input = QLineEdit()
@@ -814,7 +816,7 @@ class MainWindow(QMainWindow):
         remove_button.clicked.connect(self.remove_folder)
         protect_button = QPushButton("设为保护目录")
         protect_button.clicked.connect(self.toggle_protected_folder)
-        dest_button = QPushButton("目标目录")
+        dest_button = QPushButton("选择重复文件目标")
         dest_button.clicked.connect(self.choose_destination)
         self.scan_button.clicked.connect(self.start_scan)
         self.scan_button.setObjectName("PrimaryButton")
@@ -849,8 +851,9 @@ class MainWindow(QMainWindow):
         )
         self.bulk_keep_keyword_input.setPlaceholderText("关键词，例如 相册、原图、工作、backup")
         self.organize_rule_combo.addItems(["按拍摄年月", "按拍摄日期", "按文件类型", "按相机型号"])
-        organize_button = QPushButton("执行整理规则")
-        organize_button.clicked.connect(self.organize_by_rule)
+        self.organize_rule_combo.setToolTip("只影响整理预览中的建议目标，不会立即移动文件。")
+        self.organize_rule_combo.currentIndexChanged.connect(self.invalidate_organize_preview)
+        self.organize_keep_only_checkbox.stateChanged.connect(self.invalidate_organize_preview)
         refresh_ops_button = QPushButton("刷新记录")
         refresh_ops_button.clicked.connect(self.refresh_operations)
         undo_button = QPushButton("撤销选中移动")
@@ -909,6 +912,7 @@ class MainWindow(QMainWindow):
         load_profile_button.clicked.connect(self.load_selected_profile)
         delete_profile_button = QPushButton("删除方案")
         delete_profile_button.clicked.connect(self.delete_selected_profile)
+        delete_profile_button.setObjectName("DangerButton")
         apply_template_button = QPushButton("套用模板")
         apply_template_button.clicked.connect(self.apply_selected_template)
         guide_add_folder_button = QPushButton("添加文件夹")
@@ -953,16 +957,25 @@ class MainWindow(QMainWindow):
             self.template_combo.setItemData(self.template_combo.count() - 1, template.description, Qt.ItemDataRole.ToolTipRole)
         self.template_combo.currentIndexChanged.connect(self.on_template_selection_changed)
 
+        for target_input in (
+            self.organize_photo_input,
+            self.organize_video_input,
+            self.organize_document_input,
+            self.organize_other_input,
+        ):
+            target_input.textChanged.connect(self.invalidate_organize_preview)
+
         folder_buttons = QHBoxLayout()
         folder_buttons.addWidget(add_button)
         folder_buttons.addWidget(remove_button)
         folder_buttons.addWidget(protect_button)
+        scan_buttons = QHBoxLayout()
+        scan_buttons.addWidget(self.scan_button)
+        scan_buttons.addWidget(self.cancel_button)
         profile_buttons = QHBoxLayout()
         profile_buttons.addWidget(save_profile_button)
         profile_buttons.addWidget(load_profile_button)
         profile_buttons.addWidget(delete_profile_button)
-        template_buttons = QHBoxLayout()
-        template_buttons.addWidget(apply_template_button)
 
         left = QWidget()
         left.setObjectName("Sidebar")
@@ -976,28 +989,17 @@ class MainWindow(QMainWindow):
         self.profile_summary_label.setText("保存常用扫描目录、保护目录、保留规则和整理目标。")
         self.template_summary_label.setWordWrap(True)
         self.template_summary_label.setText("选择一个常见场景后套用，不会移动或删除文件。")
-        left_layout.addWidget(section_label("内置模板"))
-        left_layout.addWidget(self.template_combo)
-        left_layout.addLayout(template_buttons)
-        left_layout.addWidget(self.template_summary_label)
-        left_layout.addWidget(section_label("整理方案"))
-        left_layout.addWidget(self.profile_combo)
-        left_layout.addLayout(profile_buttons)
-        left_layout.addWidget(self.profile_summary_label)
+        left_layout.addWidget(section_label("重复文件处理"))
         left_layout.addWidget(dest_button)
         left_layout.addWidget(self.destination_label)
-        left_layout.addWidget(section_label("图片相似阈值"))
+        left_layout.addWidget(section_label("相似图片匹配"))
         left_layout.addWidget(self.threshold_spin)
         left_layout.addWidget(self.same_ratio_checkbox)
         left_layout.addWidget(self.same_resolution_checkbox)
         left_layout.addWidget(self.rotate_hint_checkbox)
         left_layout.addWidget(section_label("默认保留策略"))
         left_layout.addWidget(self.strategy_combo)
-        left_layout.addWidget(self.scan_button)
-        left_layout.addWidget(self.cancel_button)
-        left_layout.addWidget(section_label("整理规则"))
-        left_layout.addWidget(self.organize_rule_combo)
-        left_layout.addWidget(organize_button)
+        left_layout.addLayout(scan_buttons)
         left_layout.addStretch(1)
         left_scroll = QScrollArea()
         left_scroll.setObjectName("SidebarScroll")
@@ -1347,16 +1349,16 @@ class MainWindow(QMainWindow):
         self.organize_summary_label.setObjectName("PageSummary")
         self.organize_summary_label.setText("先生成整理预览，再批量执行移动。")
         self.organize_help_label.setWordWrap(True)
-        self.organize_help_label.setText("预览整理结果：只计算建议目标路径，不会移动文件。执行预览中的整理：真正按当前预览列表移动文件。")
+        self.organize_help_label.setObjectName("PanelStatusText")
+        self.organize_help_label.setText("整理预览只计算建议目标，不会移动文件。修改目标、归档方式或整理范围后，需要重新预览。")
 
-        preview_button = QPushButton("预览整理结果")
-        preview_button.clicked.connect(self.preview_organize_plan)
-        preview_button.setObjectName("PrimaryButton")
-        preview_button.setToolTip("只生成整理结果预览，不会移动任何文件。")
-        execute_button = QPushButton("执行预览中的整理")
-        execute_button.clicked.connect(self.execute_organize_plan)
-        execute_button.setObjectName("DangerButton")
-        execute_button.setToolTip("按当前预览列表真正移动文件。")
+        self.organize_preview_button.clicked.connect(self.preview_organize_plan)
+        self.organize_preview_button.setObjectName("PrimaryButton")
+        self.organize_preview_button.setToolTip("只生成整理结果预览，不会移动任何文件。")
+        self.organize_execute_button.clicked.connect(self.execute_organize_plan)
+        self.organize_execute_button.setObjectName("DangerButton")
+        self.organize_execute_button.setToolTip("按当前预览列表真正移动文件。")
+        self.organize_execute_button.setEnabled(False)
 
         self.organize_preview_table.setHorizontalHeaderLabels(["分类", "状态", "大小", "文件名", "来源路径", "建议目标"])
         self.organize_preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -1370,8 +1372,32 @@ class MainWindow(QMainWindow):
         organize_panel = QWidget()
         organize_panel.setObjectName("ContentPanel")
         organize_layout = QVBoxLayout(organize_panel)
-        organize_layout.setContentsMargins(14, 14, 14, 14)
-        organize_layout.setSpacing(10)
+        organize_layout.setContentsMargins(0, 0, 0, 0)
+        organize_layout.setSpacing(0)
+
+        organize_settings = QWidget()
+        organize_settings.setObjectName("OrganizerSettings")
+        organize_settings_layout = QVBoxLayout(organize_settings)
+        organize_settings_layout.setContentsMargins(14, 14, 14, 14)
+        organize_settings_layout.setSpacing(10)
+
+        organize_setup = QGridLayout()
+        organize_setup.setHorizontalSpacing(12)
+        organize_setup.setVerticalSpacing(8)
+        organize_setup.addWidget(section_label("场景模板"), 0, 0)
+        organize_setup.addWidget(self.template_combo, 0, 1)
+        organize_setup.addWidget(apply_template_button, 0, 2)
+        organize_setup.addWidget(self.template_summary_label, 1, 1, 1, 2)
+        organize_setup.addWidget(section_label("整理方案"), 2, 0)
+        organize_setup.addWidget(self.profile_combo, 2, 1, 1, 2)
+        organize_setup.addLayout(profile_buttons, 3, 1, 1, 2)
+        organize_setup.addWidget(self.profile_summary_label, 4, 1, 1, 2)
+        organize_setup.addWidget(section_label("归档方式"), 5, 0)
+        organize_setup.addWidget(self.organize_rule_combo, 5, 1, 1, 2)
+        organize_setup.setColumnStretch(1, 1)
+        organize_settings_layout.addLayout(organize_setup)
+        organize_settings_layout.addWidget(self.organize_help_label)
+        organize_settings_layout.addWidget(section_label("归档目标"))
 
         for label_text, line_edit in (
             ("照片目标目录", self.organize_photo_input),
@@ -1385,17 +1411,43 @@ class MainWindow(QMainWindow):
             browse_button = QPushButton("选择")
             browse_button.clicked.connect(lambda _checked=False, field=line_edit: self.choose_organize_target(field))
             row.addWidget(browse_button)
-            organize_layout.addLayout(row)
+            organize_settings_layout.addLayout(row)
 
-        organize_actions = QHBoxLayout()
-        organize_actions.addWidget(self.organize_keep_only_checkbox)
-        organize_actions.addStretch(1)
-        organize_actions.addWidget(preview_button)
-        organize_actions.addWidget(execute_button)
-        organize_layout.addLayout(organize_actions)
-        organize_layout.addWidget(self.organize_help_label)
-        organize_layout.addWidget(self.organize_summary_label)
-        organize_layout.addWidget(self.organize_preview_table)
+        organize_settings_layout.addWidget(self.organize_keep_only_checkbox)
+        organize_settings_layout.addWidget(self.organize_preview_button)
+        organize_settings_layout.addStretch(1)
+
+        organize_settings_scroll = QScrollArea()
+        organize_settings_scroll.setObjectName("OrganizerSettingsScroll")
+        organize_settings_scroll.setWidgetResizable(True)
+        organize_settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        organize_settings_scroll.setMinimumWidth(390)
+        organize_settings_scroll.setWidget(organize_settings)
+
+        organize_preview = QWidget()
+        organize_preview.setObjectName("OrganizerPreview")
+        organize_preview_layout = QVBoxLayout(organize_preview)
+        organize_preview_layout.setContentsMargins(14, 14, 14, 14)
+        organize_preview_layout.setSpacing(10)
+        organize_preview_layout.addWidget(section_label("整理预览"))
+        organize_preview_layout.addWidget(self.organize_summary_label)
+        organize_preview_layout.addWidget(self.organize_preview_table, 1)
+        organize_execute_row = QHBoxLayout()
+        organize_execute_row.addStretch(1)
+        organize_execute_row.addWidget(self.organize_execute_button)
+        organize_preview_layout.addLayout(organize_execute_row)
+
+        self.organize_workspace = QSplitter()
+        self.organize_workspace.setObjectName("OrganizerWorkspace")
+        self.organize_workspace.addWidget(organize_settings_scroll)
+        self.organize_workspace.addWidget(organize_preview)
+        self.organize_workspace.setChildrenCollapsible(False)
+        self.organize_workspace.setHandleWidth(8)
+        self.organize_workspace.setStretchFactor(0, 0)
+        self.organize_workspace.setStretchFactor(1, 1)
+        self.organize_workspace.setSizes([420, 760])
+        organize_preview.setMinimumWidth(460)
+        organize_layout.addWidget(self.organize_workspace)
 
         self.duplicate_workspace = QSplitter()
         self.duplicate_workspace.setObjectName("DuplicateWorkspace")
@@ -1531,21 +1583,27 @@ class MainWindow(QMainWindow):
             #Sidebar {
                 background: #fbfbfc;
             }
-            #SidebarScroll {
+            #SidebarScroll, #OrganizerSettingsScroll {
                 border: none;
                 background: transparent;
             }
-            #SidebarScroll > QWidget {
+            #SidebarScroll > QWidget, #OrganizerSettingsScroll > QWidget {
                 background: transparent;
             }
-            #DuplicateWorkspace {
+            #OrganizerSettings {
+                background: #fbfbfc;
+            }
+            #OrganizerPreview {
+                background: #ffffff;
+            }
+            #DuplicateWorkspace, #OrganizerWorkspace {
                 background: #f6f7f9;
             }
-            #DuplicateWorkspace::handle {
+            #DuplicateWorkspace::handle, #OrganizerWorkspace::handle {
                 background: #d8dee4;
                 margin: 0 3px;
             }
-            #DuplicateWorkspace::handle:hover {
+            #DuplicateWorkspace::handle:hover, #OrganizerWorkspace::handle:hover {
                 background: #54aeff;
             }
             QPushButton {
@@ -1753,12 +1811,14 @@ class MainWindow(QMainWindow):
             if folder not in existing:
                 self._add_folder_item(Path(folder))
                 existing.add(folder)
+        self.invalidate_organize_preview()
         self.refresh_onboarding()
 
     def remove_folder(self) -> None:
         for item in self.folder_list.selectedItems():
             self.protected_roots.discard(normalize_path(self._folder_path_from_item(item)))
             self.folder_list.takeItem(self.folder_list.row(item))
+        self.invalidate_organize_preview()
         self._save_settings()
         self.refresh_onboarding()
 
@@ -1776,6 +1836,7 @@ class MainWindow(QMainWindow):
                 protected.add(path)
         self.protected_roots = protected
         self._refresh_folder_item_labels()
+        self.invalidate_organize_preview()
         self._save_settings()
         self.status_label.setText(f"保护目录已更新：{len(self.protected_roots)} 个")
         self.refresh_onboarding()
@@ -1879,7 +1940,7 @@ class MainWindow(QMainWindow):
         )
         confirmed = self._confirm_action(
             "套用整理模板",
-            f"将套用“{profile.name}”，保留当前扫描目录和保护目录，并替换保留规则、整理规则和目标目录。\n\n"
+            f"将套用“{profile.name}”，保留当前扫描目录和保护目录，并替换保留规则、归档方式和目标目录。\n\n"
             f"重复待复核目录：{profile.duplicate_destination}\n"
             f"照片目标目录：{profile.photo_target}\n\n"
             "此操作不会移动、回收或删除任何文件。是否继续？",
@@ -1990,7 +2051,9 @@ class MainWindow(QMainWindow):
         self.organize_other_input.setText(str(self._profile_path_or_default(profile.other_target, self.destination / "Others")))
         self.organize_targets = self.current_organize_targets()
         self.organize_preview_items = []
+        self.organize_preview_signature = None
         self.organize_preview_table.setRowCount(0)
+        self.organize_execute_button.setEnabled(False)
         self._refresh_folder_item_labels()
         self._update_destination_label()
         self._save_settings()
@@ -2539,10 +2602,12 @@ class MainWindow(QMainWindow):
             paths,
             self.organize_targets,
             include_paths=include_paths,
-            exclude_roots={normalize_path(path) for path in self.protected_roots},
+            exclude_roots=self._organize_excluded_roots(),
+            rule=self._organize_rule_key(),
         )
         protected_skipped = sum(1 for path in paths if is_under_any(path, self.protected_roots))
         self.organize_preview_items = preview
+        self.organize_preview_signature = self._current_organize_preview_signature()
         self.organize_preview_table.setRowCount(len(preview))
 
         preview_summary = summarize_organize_preview(preview)
@@ -2569,6 +2634,7 @@ class MainWindow(QMainWindow):
             f" | 跳过保护目录 {protected_skipped}"
         )
         self._set_main_tab("整理中心")
+        self.organize_execute_button.setEnabled(bool(preview))
         self.status_label.setText("已根据目录树选择生成整理预览")
         self.refresh_onboarding()
 
@@ -2579,6 +2645,12 @@ class MainWindow(QMainWindow):
             document_root=Path(self.organize_document_input.text().strip() or str(self.destination / "Documents")),
             other_root=Path(self.organize_other_input.text().strip() or str(self.destination / "Others")),
         )
+
+    def _organize_excluded_roots(self) -> set[Path]:
+        return {
+            normalize_path(path)
+            for path in [*self.protected_roots, *self._scan_target_roots()]
+        }
 
     def _scan_target_roots(self) -> list[Path]:
         targets = self.current_organize_targets()
@@ -2705,6 +2777,43 @@ class MainWindow(QMainWindow):
             keep_paths.add(self._suggest_keep(group.records).path)
         return keep_paths
 
+    def _organize_rule_key(self) -> str:
+        rules = {
+            "按拍摄年月": "date_month",
+            "按拍摄日期": "date_day",
+            "按文件类型": "type",
+            "按相机型号": "camera",
+        }
+        return rules.get(self.organize_rule_combo.currentText(), "category")
+
+    def _current_organize_preview_signature(self) -> tuple:
+        targets = self.current_organize_targets()
+        keep_paths = (
+            tuple(sorted(str(path) for path in self._selected_keep_paths()))
+            if self.organize_keep_only_checkbox.isChecked()
+            else ()
+        )
+        return (
+            tuple(str(path) for path in self._folder_paths()),
+            tuple(str(path) for path in sorted(self.protected_roots, key=str)),
+            str(targets.photo_root),
+            str(targets.video_root),
+            str(targets.document_root),
+            str(targets.other_root),
+            self._organize_rule_key(),
+            self.organize_keep_only_checkbox.isChecked(),
+            keep_paths,
+        )
+
+    def invalidate_organize_preview(self, *_args) -> None:
+        if not self.organize_preview_items and self.organize_preview_signature is None:
+            return
+        self.organize_preview_items = []
+        self.organize_preview_signature = None
+        self.organize_preview_table.setRowCount(0)
+        self.organize_execute_button.setEnabled(False)
+        self.organize_summary_label.setText("整理设置已变化，请重新预览并核对建议目标。")
+
     def preview_organize_plan(self) -> None:
         roots = self._folder_paths()
         if not roots:
@@ -2718,7 +2827,8 @@ class MainWindow(QMainWindow):
             roots,
             self.organize_targets,
             include_paths=include_paths,
-            exclude_roots=protected_roots,
+            exclude_roots=self._organize_excluded_roots(),
+            rule=self._organize_rule_key(),
         )
         protected_skipped = sum(
             1
@@ -2727,6 +2837,7 @@ class MainWindow(QMainWindow):
             if path.is_file() and is_under_any(path, protected_roots)
         )
         self.organize_preview_items = preview
+        self.organize_preview_signature = self._current_organize_preview_signature()
         self.organize_preview_table.setRowCount(len(preview))
 
         preview_summary = summarize_organize_preview(preview)
@@ -2756,6 +2867,7 @@ class MainWindow(QMainWindow):
         if protected_skipped:
             summary_text += f" | 已跳过保护目录 {protected_skipped} 个文件"
         self.organize_summary_label.setText(summary_text)
+        self.organize_execute_button.setEnabled(bool(preview))
         self.status_label.setText("整理预览已生成")
         self.refresh_onboarding()
         self._save_settings()
@@ -2764,6 +2876,11 @@ class MainWindow(QMainWindow):
         if not self.organize_preview_items:
             self.organize_summary_label.setText("当前还没有整理预览。请先点“预览整理结果”，确认列表后再执行。")
             QMessageBox.information(self, "没有整理预览", "请先生成整理预览，再执行整理。")
+            return
+
+        if self.organize_preview_signature != self._current_organize_preview_signature():
+            self.invalidate_organize_preview()
+            QMessageBox.information(self, "整理设置已变化", "请重新生成整理预览并核对建议目标，再执行整理。")
             return
 
         summary = summarize_organize_preview(self.organize_preview_items)
@@ -2786,7 +2903,9 @@ class MainWindow(QMainWindow):
             self._remove_moved_sources_from_groups(moved_sources)
 
         self.organize_preview_items = []
+        self.organize_preview_signature = None
         self.organize_preview_table.setRowCount(0)
+        self.organize_execute_button.setEnabled(False)
         self.organize_summary_label.setText(f"整理完成，共移动 {len(moved)} 个文件。")
         self.status_label.setText(f"整理完成：{report.completed_count}/{report.planned_count} 个文件")
         self.refresh_onboarding()
@@ -3177,6 +3296,8 @@ class MainWindow(QMainWindow):
         record.keep_selected = item.checkState() == Qt.CheckState.Checked
         self.manual_keep_group_keys.add(self._group_key(group))
         self.keep_state_dirty = True
+        if self.organize_keep_only_checkbox.isChecked():
+            self.invalidate_organize_preview()
 
     def reapply_keep_strategy(self) -> None:
         current = self.group_list.currentItem()
@@ -3189,6 +3310,8 @@ class MainWindow(QMainWindow):
                     record.keep_selected = False
                 self.keep_state_dirty = True
             self.populate_group(current, None)
+        if self.organize_keep_only_checkbox.isChecked():
+            self.invalidate_organize_preview()
 
     def preview_bulk_keep_rule(self) -> None:
         groups, _min_size, _max_size = self._visible_groups()
@@ -3230,6 +3353,8 @@ class MainWindow(QMainWindow):
 
         self.keep_state_dirty = True
         self._persist_keep_state()
+        if self.organize_keep_only_checkbox.isChecked():
+            self.invalidate_organize_preview()
         self.refresh_group_list()
         keyword_text = f"，关键词“{keyword}”" if keyword else ""
         self.bulk_rule_hint_label.setText(
@@ -3909,40 +4034,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "导出失败", str(exc))
             return
         QMessageBox.information(self, "导出完成", target)
-
-    def organize_by_rule(self) -> None:
-        roots = self._folder_paths()
-        if not roots:
-            QMessageBox.information(self, "需要目录", "请先添加至少一个整理目录。")
-            return
-        rule_label = self.organize_rule_combo.currentText()
-        rule_map = {
-            "按拍摄日期": "date_day",
-            "按文件类型": "type",
-            "按相机型号": "camera",
-        }
-        rule = rule_map.get(rule_label, "date_month")
-
-        confirmed = self._confirm_action(
-            "确认整理",
-            f"将按“{rule_label}”移动文件到：\n{self.destination}",
-        )
-        if not confirmed:
-            return
-
-        total_moved = 0
-        try:
-            for root in roots:
-                moved = organize_files(root, self.destination, rule, exclude_roots=self.protected_roots)
-                total_moved += len(moved)
-        except Exception as exc:
-            QMessageBox.critical(self, "整理失败", str(exc))
-            return
-
-        self._save_settings()
-        QMessageBox.information(self, "整理完成", f"已整理 {total_moved} 个文件。")
-        self.status_label.setText(f"整理完成：{total_moved} 个文件")
-
 
 def run() -> None:
     log_path = setup_logging()

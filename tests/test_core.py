@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -604,6 +605,7 @@ class OrganizeProfileTests(unittest.TestCase):
         self.assertIn("扫描目录 2 个", summary)
         self.assertIn("保护目录 1 个", summary)
         self.assertIn("保留最高质量", summary)
+        self.assertIn("归档方式", summary)
 
     def test_builtin_templates_are_available_for_common_workflows(self) -> None:
         templates = list_builtin_templates()
@@ -852,6 +854,23 @@ class MainWindowStartupTests(unittest.TestCase):
                 duplicate_index = tab_names.index("重复处理")
                 self.assertIs(window.main_tabs.widget(duplicate_index), window.duplicate_workspace)
                 self.assertEqual(window.duplicate_workspace.count(), 3)
+                organize_page = window.main_tabs.widget(tab_names.index("整理中心"))
+                self.assertTrue(organize_page.isAncestorOf(window.template_combo))
+                self.assertTrue(organize_page.isAncestorOf(window.profile_combo))
+                self.assertTrue(organize_page.isAncestorOf(window.organize_rule_combo))
+                self.assertFalse(window.duplicate_workspace.isAncestorOf(window.template_combo))
+                window.resize(1100, 720)
+                window.show()
+                self.assertTrue(window.switch_to_tab("整理中心"))
+                app.processEvents()
+                self.assertTrue(window.template_combo.isVisible())
+                self.assertTrue(window.organize_photo_input.isVisible())
+                self.assertTrue(window.organize_preview_table.isVisible())
+                self.assertGreater(window.organize_preview_table.height(), 80)
+                rendered_window = window.grab()
+                self.assertFalse(rendered_window.isNull())
+                self.assertGreaterEqual(rendered_window.width(), 1100)
+                self.assertGreaterEqual(rendered_window.height(), 720)
                 self.assertTrue(window.duplicate_workspace.isAncestorOf(window.ai_analyze_button))
                 self.assertTrue(window.duplicate_workspace.isAncestorOf(window.ai_batch_button))
                 self.assertEqual(window.status_label.parentWidget(), window.statusBar())
@@ -868,6 +887,7 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertLessEqual(window.session_table.maximumHeight(), 220)
                 self.assertFalse(window.load_session_button.isEnabled())
                 self.assertFalse(window.delete_session_button.isEnabled())
+                self.assertFalse(window.organize_execute_button.isEnabled())
                 for table in (
                     window.file_table,
                     window.directory_detail_table,
@@ -913,6 +933,7 @@ class MainWindowStartupTests(unittest.TestCase):
                 guide_buttons = {button.text() for button in window.findChildren(QPushButton)}
                 self.assertIn("创建演示样例", guide_buttons)
                 self.assertIn("打开报告目录", guide_buttons)
+                self.assertNotIn("执行整理规则", guide_buttons)
                 window.refresh_group_list()
                 self.assertIn("创建演示样例", window.group_status_label.text())
                 self.assertIn("添加扫描目录", window.group_status_label.text())
@@ -942,6 +963,18 @@ class MainWindowStartupTests(unittest.TestCase):
                     else Qt.CheckState.Checked
                 )
                 self.assertNotEqual(keep_item.checkState(), previous_state)
+                window.organize_preview_items = [
+                    OrganizePreviewItem(Path("D:/source/old.jpg"), "photo", "图片格式", Path("E:/target/old.jpg"))
+                ]
+                window.organize_preview_signature = window._current_organize_preview_signature()
+                window.organize_preview_table.setRowCount(1)
+                window.organize_execute_button.setEnabled(True)
+                next_rule_index = (window.organize_rule_combo.currentIndex() + 1) % window.organize_rule_combo.count()
+                window.organize_rule_combo.setCurrentIndex(next_rule_index)
+                self.assertEqual(window.organize_preview_items, [])
+                self.assertEqual(window.organize_preview_table.rowCount(), 0)
+                self.assertFalse(window.organize_execute_button.isEnabled())
+                self.assertIn("重新预览", window.organize_summary_label.text())
                 self.assertEqual(window._close_warning_reasons(), [])
                 window.organize_preview_items = [
                     OrganizePreviewItem(Path("D:/source/photo.jpg"), "photo", "图片格式", Path("E:/target/photo.jpg"))
@@ -1208,6 +1241,37 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(mapped["notes.pdf"].target.parent.name, "docs")
         self.assertEqual(mapped["data.bin"].target.parent.name, "others")
         self.assertEqual(category_label(mapped["photo.jpg"].category), "照片")
+        self.assertEqual(mapped["photo.jpg"].reason, "图片格式")
+
+    def test_build_organize_preview_applies_archive_rule_to_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            photo = source_dir / "photo.jpg"
+            document = source_dir / "notes.pdf"
+            photo.write_text("image", encoding="utf-8")
+            document.write_text("document", encoding="utf-8")
+            targets = OrganizeTargetConfig(
+                photo_root=root / "photos",
+                video_root=root / "videos",
+                document_root=root / "docs",
+                other_root=root / "others",
+            )
+
+            with patch("photo_dedupe.core.organizer.image_taken_at", return_value=datetime(2024, 5, 17)):
+                date_preview = build_organize_preview([source_dir], targets, rule="date_month")
+            type_preview = build_organize_preview([source_dir], targets, rule="type")
+            with patch("photo_dedupe.core.organizer.image_camera_model", return_value="Canon EOS R5"):
+                camera_preview = build_organize_preview([source_dir], targets, rule="camera")
+
+        date_targets = {item.source.name: item.target for item in date_preview}
+        type_targets = {item.source.name: item.target for item in type_preview}
+        camera_targets = {item.source.name: item.target for item in camera_preview}
+        self.assertEqual(date_targets["photo.jpg"].parent.parts[-2:], ("2024", "2024-05"))
+        self.assertEqual(date_targets["notes.pdf"].parent.name, "docs")
+        self.assertEqual(type_targets["notes.pdf"].parent.name, "pdf")
+        self.assertEqual(camera_targets["photo.jpg"].parent.name, "Canon EOS R5")
 
     def test_build_organize_preview_can_limit_to_keep_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -202,14 +202,53 @@ def target_root_for_category(targets: OrganizeTargetConfig, category: str) -> Pa
     return targets.other_root
 
 
-def build_target_path(source: Path, targets: OrganizeTargetConfig) -> OrganizePreviewItem:
+def target_directory_for_rule(source: Path, target_root: Path, category: str, rule: str) -> tuple[Path, str]:
+    if rule == "type":
+        suffix = source.suffix.lower().lstrip(".") or "no-extension"
+        return target_root / safe_folder_name(suffix), "按扩展名归档"
+
+    if category != "photo":
+        return target_root, "按文件分类归档"
+
+    if rule in {"date_month", "date_day"}:
+        taken_at = image_taken_at(source)
+        if taken_at is None:
+            try:
+                taken_at = datetime.fromtimestamp(source.stat().st_mtime)
+            except OSError:
+                return target_root, "无法读取日期，保留在分类根目录"
+        target_dir = target_root / f"{taken_at:%Y}" / f"{taken_at:%Y-%m}"
+        if rule == "date_day":
+            target_dir /= f"{taken_at:%Y-%m-%d}"
+        return target_dir, "按拍摄日期归档" if rule == "date_day" else "按拍摄月份归档"
+
+    if rule == "camera":
+        camera = image_camera_model(source) or "Unknown Camera"
+        return target_root / safe_folder_name(camera), "按相机型号归档"
+
+    return target_root, "按文件分类归档"
+
+
+def build_target_path(
+    source: Path,
+    targets: OrganizeTargetConfig,
+    rule: str = "category",
+) -> OrganizePreviewItem:
     category, reason = classify_file(source)
     target_root = target_root_for_category(targets, category)
+    if rule == "category":
+        return OrganizePreviewItem(
+            source=source,
+            category=category,
+            reason=reason,
+            target=target_root / source.name,
+        )
+    target_dir, rule_reason = target_directory_for_rule(source, target_root, category, rule)
     return OrganizePreviewItem(
         source=source,
         category=category,
-        reason=reason,
-        target=target_root / source.name,
+        reason=f"{reason}；{rule_reason}",
+        target=target_dir / source.name,
     )
 
 
@@ -218,6 +257,7 @@ def build_organize_preview(
     targets: OrganizeTargetConfig,
     include_paths: set[Path] | None = None,
     exclude_roots: set[Path] | None = None,
+    rule: str = "category",
 ) -> list[OrganizePreviewItem]:
     preview: list[OrganizePreviewItem] = []
     seen: set[Path] = set()
@@ -228,7 +268,7 @@ def build_organize_preview(
             if source in seen:
                 continue
             seen.add(source)
-            preview.append(build_target_path(source, targets))
+            preview.append(build_target_path(source, targets, rule=rule))
     preview.sort(key=lambda item: (item.category, str(item.source).lower()))
     return preview
 
