@@ -206,6 +206,12 @@ def group_category_color(category: str) -> QColor:
     return palette.get(category, QColor("#57606a"))
 
 
+def section_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("SectionTitle")
+    return label
+
+
 class ScanWorker(QThread):
     progress_changed = Signal(str, int, int)
     finished_groups = Signal(object)
@@ -395,7 +401,7 @@ class MainWindow(QMainWindow):
         self.history_table = QTableWidget(0, 7)
         self.ai_table = QTableWidget(0, 5)
         self.health_table = QTableWidget(0, 3)
-        self.organize_preview_table = QTableWidget(0, 4)
+        self.organize_preview_table = QTableWidget(0, 6)
         self.onboarding_table = QTableWidget(0, 4)
         self.action_combo = QComboBox()
         self.bulk_keep_rule_combo = QComboBox()
@@ -436,6 +442,7 @@ class MainWindow(QMainWindow):
         self.organize_help_label = QLabel("")
         self.group_detail_summary_label = QLabel("")
         self.retention_hint_label = QLabel("勾选的文件会保留在原位置；保护目录内文件不会被批量移动或回收。")
+        self.retention_hint_label.setObjectName("SafetyHint")
         self.bulk_rule_hint_label = QLabel("")
         self.scan_button = QPushButton("开始扫描")
         self.cancel_button = QPushButton("停止扫描")
@@ -449,7 +456,9 @@ class MainWindow(QMainWindow):
         self.profile_summary_label = QLabel("")
         self.template_summary_label = QLabel("")
         self.status_label = QLabel("准备就绪")
+        self.status_label.setObjectName("GlobalStatusText")
         self.progress = QProgressBar()
+        self.progress.setFixedWidth(190)
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.health_log_path = default_log_path()
@@ -790,10 +799,13 @@ class MainWindow(QMainWindow):
         dest_button = QPushButton("目标目录")
         dest_button.clicked.connect(self.choose_destination)
         self.scan_button.clicked.connect(self.start_scan)
+        self.scan_button.setObjectName("PrimaryButton")
         self.cancel_button.clicked.connect(self.cancel_scan)
+        self.cancel_button.setObjectName("DangerButton")
         self.cancel_button.setEnabled(False)
         move_button = QPushButton("处理当前筛选结果")
         move_button.clicked.connect(self.move_unchecked)
+        move_button.setObjectName("PrimaryButton")
         reveal_button = QPushButton("打开所在文件夹")
         reveal_button.clicked.connect(self.reveal_selected_file)
         compare_images_button = QPushButton("图片对比")
@@ -845,6 +857,7 @@ class MainWindow(QMainWindow):
         refresh_history_button.clicked.connect(self.refresh_history)
         clear_history_button = QPushButton("清空扫描历史")
         clear_history_button.clicked.connect(self.clear_history)
+        clear_history_button.setObjectName("DangerButton")
         export_sessions_button = QPushButton("导出任务记录")
         export_sessions_button.clicked.connect(self.export_scan_sessions)
         export_history_button = QPushButton("导出文件缓存")
@@ -938,37 +951,35 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(16, 16, 16, 16)
         left_layout.setSpacing(8)
-        left_layout.addWidget(QLabel("扫描目录"))
+        left_layout.addWidget(section_label("扫描目录"))
         left_layout.addWidget(self.folder_list)
         left_layout.addLayout(folder_buttons)
         self.profile_summary_label.setWordWrap(True)
         self.profile_summary_label.setText("保存常用扫描目录、保护目录、保留规则和整理目标。")
         self.template_summary_label.setWordWrap(True)
         self.template_summary_label.setText("选择一个常见场景后套用，不会移动或删除文件。")
-        left_layout.addWidget(QLabel("内置模板"))
+        left_layout.addWidget(section_label("内置模板"))
         left_layout.addWidget(self.template_combo)
         left_layout.addLayout(template_buttons)
         left_layout.addWidget(self.template_summary_label)
-        left_layout.addWidget(QLabel("整理方案"))
+        left_layout.addWidget(section_label("整理方案"))
         left_layout.addWidget(self.profile_combo)
         left_layout.addLayout(profile_buttons)
         left_layout.addWidget(self.profile_summary_label)
         left_layout.addWidget(dest_button)
         left_layout.addWidget(self.destination_label)
-        left_layout.addWidget(QLabel("图片相似阈值"))
+        left_layout.addWidget(section_label("图片相似阈值"))
         left_layout.addWidget(self.threshold_spin)
         left_layout.addWidget(self.same_ratio_checkbox)
         left_layout.addWidget(self.same_resolution_checkbox)
         left_layout.addWidget(self.rotate_hint_checkbox)
-        left_layout.addWidget(QLabel("默认保留策略"))
+        left_layout.addWidget(section_label("默认保留策略"))
         left_layout.addWidget(self.strategy_combo)
         left_layout.addWidget(self.scan_button)
         left_layout.addWidget(self.cancel_button)
-        left_layout.addWidget(QLabel("整理规则"))
+        left_layout.addWidget(section_label("整理规则"))
         left_layout.addWidget(self.organize_rule_combo)
         left_layout.addWidget(organize_button)
-        left_layout.addWidget(self.progress)
-        left_layout.addWidget(self.status_label)
         left_layout.addStretch(1)
         left_scroll = QScrollArea()
         left_scroll.setObjectName("SidebarScroll")
@@ -1008,6 +1019,7 @@ class MainWindow(QMainWindow):
         self.directory_detail_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.directory_detail_table.setAlternatingRowColors(True)
         self.directory_detail_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.directory_detail_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.directory_detail_table.verticalHeader().setDefaultSectionSize(30)
         self.directory_detail_table.itemSelectionChanged.connect(self.on_directory_detail_selection_changed)
         self.directory_hint_label.setWordWrap(True)
@@ -1036,8 +1048,9 @@ class MainWindow(QMainWindow):
         groups_layout = QVBoxLayout(groups_panel)
         groups_layout.setContentsMargins(16, 16, 16, 16)
         groups_layout.setSpacing(8)
-        groups_layout.addWidget(QLabel("重复分组"))
+        groups_layout.addWidget(section_label("重复分组"))
         self.group_status_label.setWordWrap(True)
+        self.group_status_label.setObjectName("PanelStatusText")
         self.group_status_label.setText("正在准备扫描结果...")
         groups_layout.addWidget(self.group_status_label)
         groups_layout.addWidget(self.group_mode_combo)
@@ -1083,7 +1096,7 @@ class MainWindow(QMainWindow):
         self.detail_label.setWordWrap(True)
 
         right = QWidget()
-        right.setObjectName("ContentPanel")
+        right.setObjectName("DetailPanel")
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(14, 14, 14, 14)
         right_layout.setSpacing(10)
@@ -1093,7 +1106,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.thumbnail_list)
         right_layout.addWidget(self.retention_hint_label)
         self.bulk_rule_hint_label.setWordWrap(True)
-        right_layout.addWidget(QLabel("批量保留规则"))
+        right_layout.addWidget(section_label("批量保留规则"))
         right_layout.addWidget(self.bulk_keep_rule_combo)
         right_layout.addWidget(self.bulk_keep_keyword_input)
         bulk_rule_actions = QHBoxLayout()
@@ -1101,14 +1114,23 @@ class MainWindow(QMainWindow):
         preview_rule_button.clicked.connect(self.preview_bulk_keep_rule)
         apply_rule_button = QPushButton("应用到当前筛选结果")
         apply_rule_button.clicked.connect(self.apply_bulk_keep_rule)
+        apply_rule_button.setObjectName("PrimaryButton")
         bulk_rule_actions.addWidget(preview_rule_button)
         bulk_rule_actions.addWidget(apply_rule_button)
         right_layout.addLayout(bulk_rule_actions)
         right_layout.addWidget(self.bulk_rule_hint_label)
-        right_layout.addWidget(self.action_combo)
-        right_layout.addWidget(compare_images_button)
-        right_layout.addWidget(reveal_button)
-        right_layout.addWidget(move_button)
+        inspection_actions = QHBoxLayout()
+        self.ai_analyze_button.setToolTip("判断当前选中的图片；结果会显示在“AI 判断”页。")
+        self.ai_batch_button.setToolTip("判断当前重复分组中的图片；结果会显示在“AI 判断”页。")
+        inspection_actions.addWidget(compare_images_button)
+        inspection_actions.addWidget(reveal_button)
+        inspection_actions.addWidget(self.ai_analyze_button)
+        inspection_actions.addWidget(self.ai_batch_button)
+        right_layout.addLayout(inspection_actions)
+        processing_actions = QHBoxLayout()
+        processing_actions.addWidget(self.action_combo, 1)
+        processing_actions.addWidget(move_button)
+        right_layout.addLayout(processing_actions)
         right_layout.addWidget(self.preview_stack)
         right_layout.addWidget(self.detail_label)
 
@@ -1117,6 +1139,7 @@ class MainWindow(QMainWindow):
         self.operations_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.operations_table.setAlternatingRowColors(True)
         self.operations_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.operations_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.operations_table.verticalHeader().setDefaultSectionSize(30)
         self.operations_table.setColumnHidden(5, True)
 
@@ -1140,6 +1163,7 @@ class MainWindow(QMainWindow):
         operations_layout.setContentsMargins(14, 14, 14, 14)
         operations_layout.setSpacing(10)
         self.operation_summary_label.setWordWrap(True)
+        self.operation_summary_label.setObjectName("PageSummary")
         operations_layout.addWidget(self.operation_summary_label)
         operations_layout.addLayout(ops_filter_row)
         operations_layout.addWidget(self.operations_table)
@@ -1149,13 +1173,21 @@ class MainWindow(QMainWindow):
         self.history_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.history_table.setAlternatingRowColors(True)
         self.history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.history_table.verticalHeader().setDefaultSectionSize(30)
+        self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.history_table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.history_table.setWordWrap(False)
+        self.history_table.verticalHeader().setDefaultSectionSize(32)
 
         self.session_table.setHorizontalHeaderLabels(["时间", "扫描目录", "分组数", "重复文件数", "占用空间", "预估可省", "ID"])
         self.session_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.session_table.setAlternatingRowColors(True)
         self.session_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.session_table.verticalHeader().setDefaultSectionSize(30)
+        self.session_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.session_table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.session_table.setWordWrap(False)
+        self.session_table.setMinimumHeight(112)
+        self.session_table.setMaximumHeight(220)
+        self.session_table.verticalHeader().setDefaultSectionSize(32)
         self.session_table.setColumnHidden(6, True)
         self.session_table.itemSelectionChanged.connect(self.on_session_selection_changed)
         self.session_table.itemDoubleClicked.connect(self.on_session_item_double_clicked)
@@ -1175,15 +1207,21 @@ class MainWindow(QMainWindow):
         session_filter_row.addWidget(self.session_sort_combo)
         history_buttons = QHBoxLayout()
         history_buttons.addWidget(refresh_history_button)
-        load_session_button = QPushButton("加载选中扫描任务")
-        load_session_button.clicked.connect(self.load_selected_scan_session)
-        history_buttons.addWidget(load_session_button)
-        delete_session_button = QPushButton("删除选中扫描任务")
-        delete_session_button.clicked.connect(self.delete_selected_scan_session)
-        history_buttons.addWidget(delete_session_button)
-        history_buttons.addWidget(clear_history_button)
+        self.load_session_button = QPushButton("加载选中扫描任务")
+        self.load_session_button.clicked.connect(self.load_selected_scan_session)
+        self.load_session_button.setObjectName("PrimaryButton")
+        self.load_session_button.setEnabled(False)
+        history_buttons.addWidget(self.load_session_button)
+        history_buttons.addStretch(1)
         history_buttons.addWidget(export_sessions_button)
         history_buttons.addWidget(export_history_button)
+        history_buttons.addSpacing(12)
+        self.delete_session_button = QPushButton("删除选中扫描任务")
+        self.delete_session_button.clicked.connect(self.delete_selected_scan_session)
+        self.delete_session_button.setObjectName("DangerButton")
+        self.delete_session_button.setEnabled(False)
+        history_buttons.addWidget(self.delete_session_button)
+        history_buttons.addWidget(clear_history_button)
 
         history_panel = QWidget()
         history_panel.setObjectName("ContentPanel")
@@ -1191,11 +1229,14 @@ class MainWindow(QMainWindow):
         history_layout.setContentsMargins(14, 14, 14, 14)
         history_layout.setSpacing(10)
         self.session_summary_label.setWordWrap(True)
+        self.session_summary_label.setObjectName("PageSummary")
         self.session_summary_label.setText("这里会显示历史扫描任务。")
         history_layout.addWidget(self.session_summary_label)
         history_layout.addLayout(session_filter_row)
-        history_layout.addWidget(self.session_table)
-        history_layout.addWidget(self.history_table)
+        history_layout.addWidget(section_label("扫描任务"))
+        history_layout.addWidget(self.session_table, 0)
+        history_layout.addWidget(section_label("文件缓存（最近 500 条）"))
+        history_layout.addWidget(self.history_table, 1)
         history_layout.addLayout(history_buttons)
 
         self.ai_table.setHorizontalHeaderLabels(["时间", "模型", "分数", "摘要", "路径"])
@@ -1203,6 +1244,7 @@ class MainWindow(QMainWindow):
         self.ai_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.ai_table.setAlternatingRowColors(True)
         self.ai_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.ai_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.ai_table.verticalHeader().setDefaultSectionSize(30)
 
         ai_panel = QWidget()
@@ -1222,8 +1264,7 @@ class MainWindow(QMainWindow):
         ai_buttons = QHBoxLayout()
         ai_buttons.addWidget(save_ai_button)
         ai_buttons.addWidget(self.ai_check_button)
-        ai_buttons.addWidget(self.ai_analyze_button)
-        ai_buttons.addWidget(self.ai_batch_button)
+        ai_buttons.addStretch(1)
         ai_layout.addLayout(ai_buttons)
         ai_filter_buttons = QHBoxLayout()
         ai_filter_buttons.addWidget(self.ai_score_filter_spin)
@@ -1238,6 +1279,7 @@ class MainWindow(QMainWindow):
         self.health_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.health_table.setAlternatingRowColors(True)
         self.health_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.health_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.health_table.verticalHeader().setDefaultSectionSize(30)
         self.health_diagnostic_text.setReadOnly(True)
         self.health_diagnostic_text.setMinimumHeight(180)
@@ -1249,6 +1291,7 @@ class MainWindow(QMainWindow):
         health_layout.setContentsMargins(14, 14, 14, 14)
         health_layout.setSpacing(10)
         self.health_summary_label.setWordWrap(True)
+        self.health_summary_label.setObjectName("PageSummary")
         health_layout.addWidget(self.health_summary_label)
         health_layout.addWidget(self.health_table)
         health_layout.addWidget(QLabel("可复制诊断信息"))
@@ -1269,6 +1312,7 @@ class MainWindow(QMainWindow):
         self.onboarding_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.onboarding_table.setAlternatingRowColors(True)
         self.onboarding_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.onboarding_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.onboarding_table.verticalHeader().setDefaultSectionSize(34)
 
         onboarding_panel = QWidget()
@@ -1277,7 +1321,9 @@ class MainWindow(QMainWindow):
         onboarding_layout.setContentsMargins(14, 14, 14, 14)
         onboarding_layout.setSpacing(10)
         self.onboarding_summary_label.setWordWrap(True)
+        self.onboarding_summary_label.setObjectName("PageSummary")
         self.onboarding_guidance_label.setWordWrap(True)
+        self.onboarding_guidance_label.setObjectName("PanelStatusText")
         onboarding_actions = QGridLayout()
         guide_buttons = (
             guide_add_folder_button,
@@ -1301,15 +1347,18 @@ class MainWindow(QMainWindow):
         self.organize_document_input.setText(str(self.organize_targets.document_root))
         self.organize_other_input.setText(str(self.organize_targets.other_root))
         self.organize_summary_label.setWordWrap(True)
+        self.organize_summary_label.setObjectName("PageSummary")
         self.organize_summary_label.setText("先生成整理预览，再批量执行移动。")
         self.organize_help_label.setWordWrap(True)
         self.organize_help_label.setText("预览整理结果：只计算建议目标路径，不会移动文件。执行预览中的整理：真正按当前预览列表移动文件。")
 
         preview_button = QPushButton("预览整理结果")
         preview_button.clicked.connect(self.preview_organize_plan)
+        preview_button.setObjectName("PrimaryButton")
         preview_button.setToolTip("只生成整理结果预览，不会移动任何文件。")
         execute_button = QPushButton("执行预览中的整理")
         execute_button.clicked.connect(self.execute_organize_plan)
+        execute_button.setObjectName("DangerButton")
         execute_button.setToolTip("按当前预览列表真正移动文件。")
 
         self.organize_preview_table.setHorizontalHeaderLabels(["分类", "状态", "大小", "文件名", "来源路径", "建议目标"])
@@ -1321,6 +1370,7 @@ class MainWindow(QMainWindow):
         self.organize_preview_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.organize_preview_table.setAlternatingRowColors(True)
         self.organize_preview_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.organize_preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.organize_preview_table.verticalHeader().setDefaultSectionSize(30)
 
         organize_panel = QWidget()
@@ -1353,11 +1403,29 @@ class MainWindow(QMainWindow):
         organize_layout.addWidget(self.organize_summary_label)
         organize_layout.addWidget(self.organize_preview_table)
 
+        self.duplicate_workspace = QSplitter()
+        self.duplicate_workspace.setObjectName("DuplicateWorkspace")
+        self.duplicate_workspace.addWidget(left_scroll)
+        self.duplicate_workspace.addWidget(groups_panel)
+        self.duplicate_workspace.addWidget(right)
+        self.duplicate_workspace.setChildrenCollapsible(False)
+        self.duplicate_workspace.setHandleWidth(8)
+        self.duplicate_workspace.setStretchFactor(0, 0)
+        self.duplicate_workspace.setStretchFactor(1, 0)
+        self.duplicate_workspace.setStretchFactor(2, 1)
+        self.duplicate_workspace.setSizes([280, 320, 680])
+        groups_panel.setMinimumWidth(280)
+        right.setMinimumWidth(440)
+
         self.main_tabs = QTabWidget()
+        self.main_tabs.setObjectName("MainNavigation")
+        self.main_tabs.setDocumentMode(True)
+        self.main_tabs.setUsesScrollButtons(True)
+        self.main_tabs.tabBar().setExpanding(False)
         tabs = self.main_tabs
         tabs.addTab(onboarding_panel, "新手向导")
         tabs.addTab(organize_panel, "整理中心")
-        tabs.addTab(right, "重复处理")
+        tabs.addTab(self.duplicate_workspace, "重复处理")
         tabs.addTab(operations_panel, "操作记录")
         tabs.addTab(history_panel, "扫描历史")
         tabs.addTab(ai_panel, "AI 判断")
@@ -1366,19 +1434,18 @@ class MainWindow(QMainWindow):
         self.main_tabs.currentChanged.connect(self.on_tab_changed)
         self._build_help_menu()
 
-        splitter = QSplitter()
-        splitter.setObjectName("MainSplitter")
-        splitter.addWidget(left_scroll)
-        splitter.addWidget(groups_panel)
-        splitter.addWidget(tabs)
-        splitter.setSizes([270, 310, 700])
-
         container = QWidget()
         container.setObjectName("AppRoot")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.addWidget(splitter)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.addWidget(tabs)
         self.setCentralWidget(container)
+
+        status_bar = self.statusBar()
+        status_bar.setObjectName("AppStatusBar")
+        status_bar.setSizeGripEnabled(True)
+        status_bar.addWidget(self.status_label, 1)
+        status_bar.addPermanentWidget(self.progress)
 
     def _build_help_menu(self) -> None:
         help_menu = self.menuBar().addMenu("帮助")
@@ -1458,10 +1525,14 @@ class MainWindow(QMainWindow):
             #AppRoot {
                 background: #f6f7f9;
             }
-            #Sidebar, #GroupsPanel, #ContentPanel {
+            #Sidebar, #GroupsPanel, #DetailPanel {
                 background: #ffffff;
                 border: 1px solid #d8dee4;
-                border-radius: 8px;
+                border-radius: 6px;
+            }
+            #ContentPanel {
+                background: #ffffff;
+                border: none;
             }
             #Sidebar {
                 background: #fbfbfc;
@@ -1473,8 +1544,15 @@ class MainWindow(QMainWindow):
             #SidebarScroll > QWidget {
                 background: transparent;
             }
-            #MainSplitter::handle {
-                background: transparent;
+            #DuplicateWorkspace {
+                background: #f6f7f9;
+            }
+            #DuplicateWorkspace::handle {
+                background: #d8dee4;
+                margin: 0 3px;
+            }
+            #DuplicateWorkspace::handle:hover {
+                background: #54aeff;
             }
             QPushButton {
                 min-height: 28px;
@@ -1492,9 +1570,46 @@ class MainWindow(QMainWindow):
             QPushButton:pressed {
                 background: #e6ebf0;
             }
+            QPushButton:focus {
+                border: 2px solid #0969da;
+                padding: 5px 9px;
+            }
             QPushButton:disabled {
                 color: #8c959f;
                 background: #f0f2f4;
+                border-color: #d8dee4;
+            }
+            QPushButton#PrimaryButton {
+                color: #ffffff;
+                background: #0969da;
+                border-color: #0969da;
+                font-weight: 600;
+            }
+            QPushButton#PrimaryButton:hover {
+                background: #0550ae;
+                border-color: #0550ae;
+            }
+            QPushButton#PrimaryButton:pressed {
+                background: #033d8b;
+            }
+            QPushButton#PrimaryButton:disabled {
+                color: #ffffff;
+                background: #8c959f;
+                border-color: #8c959f;
+            }
+            QPushButton#DangerButton {
+                color: #cf222e;
+                background: #ffffff;
+                border-color: #cf222e;
+            }
+            QPushButton#DangerButton:hover {
+                color: #a40e26;
+                background: #fff1f3;
+                border-color: #a40e26;
+            }
+            QPushButton#DangerButton:disabled {
+                color: #8c959f;
+                background: #f6f8fa;
                 border-color: #d8dee4;
             }
             QComboBox, QSpinBox, QLineEdit {
@@ -1508,7 +1623,7 @@ class MainWindow(QMainWindow):
             QComboBox:focus, QSpinBox:focus, QLineEdit:focus {
                 border-color: #0969da;
             }
-            QListWidget, QTableWidget {
+            QListWidget, QTableWidget, QTreeWidget, QPlainTextEdit {
                 border: 1px solid #d8dee4;
                 border-radius: 6px;
                 background: #ffffff;
@@ -1536,29 +1651,74 @@ class MainWindow(QMainWindow):
                 color: #57606a;
                 background: transparent;
             }
+            QLabel#SectionTitle {
+                color: #24292f;
+                font-weight: 600;
+                padding: 6px 0 2px 0;
+            }
+            QLabel#PageSummary {
+                color: #24292f;
+                font-size: 14px;
+                font-weight: 600;
+                padding-bottom: 4px;
+            }
+            QLabel#PanelStatusText {
+                color: #424a53;
+                background: #f6f8fa;
+                border-left: 3px solid #54aeff;
+                padding: 8px 10px;
+            }
+            QLabel#SafetyHint {
+                color: #1a6334;
+                background: #f0fff4;
+                border: 1px solid #b7dfc2;
+                border-radius: 6px;
+                padding: 9px 10px;
+            }
             QTabWidget::pane {
-                border: 1px solid #d8dee4;
-                border-radius: 8px;
+                border: none;
                 background: #ffffff;
-                top: -1px;
             }
             QTabBar::tab {
-                padding: 8px 14px;
-                background: #f6f8fa;
-                border: 1px solid #d8dee4;
-                border-bottom: none;
-                border-top-left-radius: 7px;
-                border-top-right-radius: 7px;
-                margin-right: 3px;
+                min-width: 72px;
+                padding: 9px 14px;
+                background: transparent;
+                border: none;
+                border-bottom: 3px solid transparent;
                 color: #57606a;
             }
             QTabBar::tab:selected {
                 background: #ffffff;
                 color: #0969da;
                 font-weight: 600;
+                border-bottom-color: #0969da;
             }
             QTabBar::tab:hover {
                 color: #24292f;
+                background: #eef2f6;
+            }
+            QTabBar::tab:focus {
+                color: #0969da;
+            }
+            QMenuBar {
+                color: #424a53;
+                background: #ffffff;
+                border-bottom: 1px solid #d8dee4;
+            }
+            QMenuBar::item:selected {
+                color: #0969da;
+                background: #eef6ff;
+            }
+            QStatusBar#AppStatusBar {
+                background: #ffffff;
+                border-top: 1px solid #d8dee4;
+            }
+            QStatusBar#AppStatusBar::item {
+                border: none;
+            }
+            QLabel#GlobalStatusText {
+                color: #424a53;
+                padding-left: 6px;
             }
             QProgressBar {
                 height: 16px;
@@ -1572,12 +1732,15 @@ class MainWindow(QMainWindow):
                 background-color: #0969da;
                 border-radius: 7px;
             }
+            QToolTip {
+                color: #ffffff;
+                background: #24292f;
+                border: 1px solid #24292f;
+                padding: 5px 7px;
+            }
             """
         )
         self.retention_hint_label.setWordWrap(True)
-        self.retention_hint_label.setStyleSheet(
-            "padding: 9px 10px; border: 1px solid #d8dee4; border-radius: 7px; background: #f6f8fa; color: #57606a;"
-        )
 
     def add_folder(self) -> None:
         dialog = QFileDialog(self, "选择一个或多个要扫描的文件夹")
@@ -3235,8 +3398,12 @@ class MainWindow(QMainWindow):
                 str(session.id),
             ]
             for column, value in enumerate(values):
-                self.session_table.setItem(row, column, QTableWidgetItem(value))
-        self.session_table.resizeRowsToContents()
+                item = QTableWidgetItem(value)
+                if column in (0, 1):
+                    item.setToolTip(value)
+                self.session_table.setItem(row, column, item)
+        self.load_session_button.setEnabled(False)
+        self.delete_session_button.setEnabled(False)
         self.apply_session_filter()
 
         records = self.database.list_scanned_files()
@@ -3254,8 +3421,10 @@ class MainWindow(QMainWindow):
                 str(record.path),
             ]
             for column, value in enumerate(values):
-                self.history_table.setItem(row, column, QTableWidgetItem(value))
-        self.history_table.resizeRowsToContents()
+                item = QTableWidgetItem(value)
+                if column in (0, 2, 4, 5, 6):
+                    item.setToolTip(value)
+                self.history_table.setItem(row, column, item)
 
     def _sorted_scan_sessions(self, sessions):
         sort_label = self.session_sort_combo.currentText()
@@ -3336,8 +3505,16 @@ class MainWindow(QMainWindow):
         elif self.session_table.currentRow() < 0:
             self.session_summary_label.setText("这里会显示历史扫描任务，双击任务可直接加载。")
 
+        current_row = self.session_table.currentRow()
+        if current_row >= 0 and self.session_table.isRowHidden(current_row):
+            self.session_table.clearSelection()
+            self.session_table.setCurrentCell(-1, -1)
+
     def on_session_selection_changed(self) -> None:
         row = self.session_table.currentRow()
+        has_selection = row >= 0
+        self.load_session_button.setEnabled(has_selection)
+        self.delete_session_button.setEnabled(has_selection)
         if row < 0:
             return
         created_item = self.session_table.item(row, 0)

@@ -833,7 +833,7 @@ class MainWindowStartupTests(unittest.TestCase):
 
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QScrollArea
+        from PySide6.QtWidgets import QApplication, QAbstractItemView, QLineEdit, QPushButton, QScrollArea
         from photo_dedupe.ui.main_window import MainWindow, find_support_document
 
         app = QApplication.instance() or QApplication([])
@@ -848,6 +848,25 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertIn("添加扫描目录", window.group_status_label.text())
                 tab_names = [window.main_tabs.tabText(index) for index in range(window.main_tabs.count())]
                 self.assertIn("新手向导", tab_names)
+                duplicate_index = tab_names.index("重复处理")
+                self.assertIs(window.main_tabs.widget(duplicate_index), window.duplicate_workspace)
+                self.assertEqual(window.duplicate_workspace.count(), 3)
+                self.assertTrue(window.duplicate_workspace.isAncestorOf(window.ai_analyze_button))
+                self.assertTrue(window.duplicate_workspace.isAncestorOf(window.ai_batch_button))
+                self.assertEqual(window.status_label.parentWidget(), window.statusBar())
+                self.assertEqual(window.organize_preview_table.columnCount(), 6)
+                self.assertEqual(
+                    window.organize_preview_table.editTriggers(),
+                    QAbstractItemView.EditTrigger.NoEditTriggers,
+                )
+                self.assertFalse(window.history_table.wordWrap())
+                self.assertEqual(
+                    window.history_table.editTriggers(),
+                    QAbstractItemView.EditTrigger.NoEditTriggers,
+                )
+                self.assertLessEqual(window.session_table.maximumHeight(), 220)
+                self.assertFalse(window.load_session_button.isEnabled())
+                self.assertFalse(window.delete_session_button.isEnabled())
                 self.assertEqual(window.ai_check_button.text(), "检查 AI 配置")
                 self.assertEqual(window.ai_key_input.echoMode(), QLineEdit.EchoMode.Password)
                 self.assertFalse(window.ai_show_key_checkbox.isChecked())
