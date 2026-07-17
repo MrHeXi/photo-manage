@@ -833,6 +833,178 @@ class MainWindowStartupTests(unittest.TestCase):
         self.assertIn("Photo Manage GPT", result)
         self.assertEqual(restored, "D:/RealUserData")
 
+    def test_sidebar_navigation_and_responsive_rendering(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QFontDatabase
+        from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
+        from photo_dedupe.ui.main_window import (
+            NAVIGATION_COLLAPSED_WIDTH,
+            NAVIGATION_EXPANDED_WIDTH,
+            MainWindow,
+        )
+
+        app = QApplication.instance() or QApplication([])
+        ui_font = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "msyh.ttc"
+        if ui_font.exists():
+            QFontDatabase.addApplicationFont(str(ui_font))
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"LOCALAPPDATA": directory}):
+            window = MainWindow(safe_mode=True)
+            try:
+                window.resize(1360, 820)
+                window.show()
+                app.processEvents()
+
+                expected_pages = (
+                    ("onboarding", "新手向导"),
+                    ("duplicates", "重复处理"),
+                    ("organizer", "整理中心"),
+                    ("history", "扫描历史"),
+                    ("operations", "操作记录"),
+                    ("ai", "AI 判断"),
+                    ("health", "健康诊断"),
+                )
+                self.assertEqual(list(window.navigation_buttons), [key for key, _label in expected_pages])
+                self.assertTrue(window.main_tabs.tabBar().isHidden())
+                self.assertFalse(window.menuBar().isVisible())
+                self.assertFalse(window.navigation_collapsed)
+                self.assertEqual(window.navigation_rail.width(), NAVIGATION_EXPANDED_WIDTH)
+                self.assertEqual(window.page_header.height(), 56)
+                self.assertFalse(window.navigation_toggle_button.hasFocus())
+                self.assertEqual(
+                    [
+                        action
+                        for action, button in window.onboarding_action_buttons.items()
+                        if button.objectName() == "PrimaryButton"
+                    ],
+                    ["添加文件夹"],
+                )
+                self.assertTrue(all(not button.icon().isNull() for button in window.navigation_buttons.values()))
+                self.assertLessEqual(
+                    window.navigation_brand_label.fontMetrics().horizontalAdvance(window.navigation_brand_label.text()),
+                    window.navigation_brand_label.width(),
+                )
+                self.assertEqual(
+                    window.navigation_rail.geometry().right() + 1,
+                    window.content_shell.geometry().left(),
+                )
+                self.assertIs(window.navigation_help_button.menu(), window.help_menu)
+                self.assertIn("打开健康诊断", [action.text() for action in window.help_menu.actions()])
+                for target_input in (
+                    window.organize_photo_input,
+                    window.organize_video_input,
+                    window.organize_document_input,
+                    window.organize_other_input,
+                ):
+                    self.assertEqual(target_input.cursorPosition(), 0)
+
+                for viewport in ((1360, 820), (1024, 680)):
+                    window.resize(*viewport)
+                    app.processEvents()
+                    self.assertEqual((window.width(), window.height()), viewport)
+                    expected_navigation_width = (
+                        NAVIGATION_EXPANDED_WIDTH if viewport[0] == 1360 else NAVIGATION_COLLAPSED_WIDTH
+                    )
+                    self.assertEqual(window.navigation_rail.width(), expected_navigation_width)
+                    for page_key, page_label in expected_pages:
+                        with self.subTest(viewport=viewport, page=page_key):
+                            window.navigation_buttons[page_key].click()
+                            app.processEvents()
+                            self.assertEqual(window.main_tabs.currentIndex(), window.page_index_by_key[page_key])
+                            self.assertEqual(
+                                [key for key, button in window.navigation_buttons.items() if button.isChecked()],
+                                [page_key],
+                            )
+                            self.assertEqual(window.page_title_label.text(), page_label)
+                            current_page = window.main_tabs.currentWidget()
+                            self.assertTrue(current_page.isVisible())
+                            self.assertGreater(current_page.width(), 0)
+                            self.assertGreater(current_page.height(), 0)
+                            self.assertGreaterEqual(current_page.width(), window.main_tabs.width() - 4)
+                            self.assertGreaterEqual(current_page.height(), window.main_tabs.height() - 4)
+                            rendered = window.centralWidget().grab()
+                            self.assertFalse(rendered.isNull())
+                            image = rendered.toImage()
+                            colors = {
+                                image.pixelColor(x, y).rgba()
+                                for x in range(0, image.width(), max(image.width() // 80, 1))
+                                for y in range(0, image.height(), max(image.height() // 60, 1))
+                            }
+                            self.assertGreater(len(colors), 2)
+
+                    self.assertEqual(
+                        window.navigation_rail.geometry().right() + 1,
+                        window.content_shell.geometry().left(),
+                    )
+
+                self.assertEqual(window.size().width(), 1024)
+                self.assertEqual(window.size().height(), 680)
+                self.assertTrue(window.navigation_collapsed)
+                self.assertTrue(window.navigation_forced_collapsed)
+                self.assertFalse(window.navigation_toggle_button.isEnabled())
+                self.assertEqual(window.navigation_rail.width(), NAVIGATION_COLLAPSED_WIDTH)
+                for page_key, page_label in expected_pages:
+                    button = window.navigation_buttons[page_key]
+                    self.assertEqual(button.toolButtonStyle(), Qt.ToolButtonStyle.ToolButtonIconOnly)
+                    self.assertEqual(button.accessibleName(), page_label)
+                    self.assertEqual(button.toolTip(), page_label)
+
+                window.navigation_buttons["duplicates"].click()
+                app.processEvents()
+                self.assertEqual(window.main_tabs.currentIndex(), window.page_index_by_key["duplicates"])
+                self.assertGreater(window.file_table.height(), 80)
+                self.assertGreater(window.preview_stack.height(), 100)
+                for object_name in ("SidebarScroll", "DuplicateControlsScroll"):
+                    scroll_area = window.findChild(QScrollArea, object_name)
+                    self.assertIsNotNone(scroll_area)
+                    self.assertEqual(
+                        scroll_area.horizontalScrollBarPolicy(),
+                        Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+                    )
+                    self.assertEqual(scroll_area.horizontalScrollBar().maximum(), 0)
+                    self.assertLessEqual(scroll_area.widget().width(), scroll_area.viewport().width())
+                buttons_by_text = {
+                    button.text(): button
+                    for button in window.findChildren(QPushButton)
+                }
+                for label in ("预览应用规则", "应用到当前筛选结果"):
+                    button = buttons_by_text[label]
+                    self.assertGreaterEqual(button.width(), button.sizeHint().width())
+                process_button = buttons_by_text["处理当前筛选结果"]
+                self.assertTrue(window.scan_button.isVisible())
+                self.assertTrue(window.cancel_button.isVisible())
+                self.assertTrue(window.action_combo.isVisible())
+                self.assertTrue(process_button.isVisible())
+                self.assertTrue(process_button.parentWidget().rect().contains(process_button.geometry()))
+                self.assertFalse(window.switch_to_page("missing-page"))
+                status_before_toggle = window.status_label.text()
+                window.navigation_toggle_button.click()
+                app.processEvents()
+                self.assertTrue(window.navigation_collapsed)
+                self.assertEqual(window.status_label.text(), status_before_toggle)
+                self.assertEqual(window.navigation_toggle_button.accessibleName(), "窗口加宽后可展开导航")
+
+                window.resize(1360, 820)
+                app.processEvents()
+                self.assertFalse(window.navigation_collapsed)
+                self.assertTrue(window.navigation_toggle_button.isEnabled())
+                self.assertEqual(window.navigation_rail.width(), NAVIGATION_EXPANDED_WIDTH)
+                current_index = window.main_tabs.currentIndex()
+                window.navigation_toggle_button.click()
+                app.processEvents()
+                self.assertTrue(window.navigation_collapsed)
+                self.assertEqual(window.navigation_rail.width(), NAVIGATION_COLLAPSED_WIDTH)
+                self.assertEqual(window.main_tabs.currentIndex(), current_index)
+                window.navigation_toggle_button.click()
+                app.processEvents()
+                self.assertFalse(window.navigation_collapsed)
+                self.assertEqual(window.navigation_rail.width(), NAVIGATION_EXPANDED_WIDTH)
+                self.assertTrue(window.switch_to_tab("健康诊断"))
+                self.assertEqual(window.page_title_label.text(), "健康诊断")
+            finally:
+                window.close()
+                app.processEvents()
+
     def test_safe_mode_skips_restore_worker(self) -> None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtCore import Qt

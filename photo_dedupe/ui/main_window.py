@@ -7,17 +7,19 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, QThread, Qt, QTimer, Signal, QUrl
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPixmap
+from PySide6.QtCore import QLockFile, QSize, QThread, Qt, QTimer, Signal, QUrl
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -36,9 +38,11 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QSpinBox,
+    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QTreeView,
@@ -89,7 +93,14 @@ from photo_dedupe.core.organize_profiles import (
     remove_profile,
     upsert_profile,
 )
-from photo_dedupe.core.onboarding import OnboardingSnapshot, build_onboarding_steps, onboarding_primary_guidance, onboarding_summary
+from photo_dedupe.core.onboarding import (
+    STATUS_NEXT,
+    STATUS_RECOMMENDED,
+    OnboardingSnapshot,
+    build_onboarding_steps,
+    onboarding_primary_guidance,
+    onboarding_summary,
+)
 from photo_dedupe.core.operation_report import (
     build_organize_result_report,
     build_processing_result_report,
@@ -132,6 +143,18 @@ APP_NAME = "Photo Manage GPT"
 APP_VERSION = __version__
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 APP_USER_MODEL_ID = "PhotoManageGPT.PhotoManageGPT.1"
+NAVIGATION_EXPANDED_WIDTH = 224
+NAVIGATION_COLLAPSED_WIDTH = 64
+NAVIGATION_COLLAPSE_BREAKPOINT = 1220
+PAGE_DEFINITIONS = (
+    ("onboarding", "新手向导"),
+    ("duplicates", "重复处理"),
+    ("organizer", "整理中心"),
+    ("history", "扫描历史"),
+    ("operations", "操作记录"),
+    ("ai", "AI 判断"),
+    ("health", "健康诊断"),
+)
 EMPTY_SCAN_GUIDANCE = (
     "暂无重复分组。\n"
     "第一次使用：可在“新手向导”点击“创建演示样例”先练习，或点击“添加文件夹”添加扫描目录。\n"
@@ -154,6 +177,20 @@ def load_app_icon() -> QIcon:
         if path.exists():
             return QIcon(str(path))
     return QIcon()
+
+
+def monochrome_icon(icon: QIcon, size: QSize = QSize(18, 18)) -> QIcon:
+    source = icon.pixmap(size)
+    if source.isNull():
+        return icon
+    tinted = QPixmap(source.size())
+    tinted.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(tinted)
+    painter.drawPixmap(0, 0, source)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(tinted.rect(), QColor("#5f6368"))
+    painter.end()
+    return QIcon(tinted)
 
 
 def find_support_document(filename: str, roots: list[Path] | None = None) -> Path | None:
@@ -197,7 +234,7 @@ def format_size(size: int) -> str:
 def group_category_color(category: str) -> QColor:
     palette = {
         "photo": QColor("#1f6feb"),
-        "video": QColor("#bf8700"),
+        "video": QColor("#8a5a00"),
         "document": QColor("#0969da"),
         "other": QColor("#57606a"),
         "mixed": QColor("#8250df"),
@@ -350,7 +387,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(load_app_icon())
         self.resize(1280, 820)
-        self.setMinimumSize(1100, 720)
+        self.setMinimumSize(1024, 680)
 
         self.database = AppDatabase()
         self.groups: list[DuplicateGroup] = []
@@ -382,6 +419,16 @@ class MainWindow(QMainWindow):
         self.organize_preview_items: list[OrganizePreviewItem] = []
         self.organize_preview_signature: tuple | None = None
         self.organize_profiles: list[OrganizeProfile] = []
+        self.page_index_by_key: dict[str, int] = {}
+        self.page_key_by_label = {label: key for key, label in PAGE_DEFINITIONS}
+        self.page_label_by_key = dict(PAGE_DEFINITIONS)
+        self.page_key_by_index: dict[int, str] = {}
+        self.navigation_buttons: dict[str, QToolButton] = {}
+        self.navigation_group_labels: list[QLabel] = []
+        self.navigation_collapsed = False
+        self.navigation_user_collapsed = False
+        self.navigation_forced_collapsed = False
+        self.initial_content_focus_assigned = False
 
         self.folder_list = QListWidget()
         self.group_list = QListWidget()
@@ -630,7 +677,7 @@ class MainWindow(QMainWindow):
             if item.status in {"正常"}:
                 status_cell.setForeground(QColor("#1a7f37"))
             elif item.status in {"可选缺失", "未创建", "待创建", "待加载", "提示"}:
-                status_cell.setForeground(QColor("#bf8700"))
+                status_cell.setForeground(QColor("#8a5a00"))
             else:
                 status_cell.setForeground(QColor("#cf222e"))
             for column, value in enumerate((item.name, item.status, item.detail)):
@@ -942,6 +989,16 @@ class MainWindow(QMainWindow):
         guide_profile_button.clicked.connect(self.save_current_profile)
         guide_refresh_button = QPushButton("刷新向导")
         guide_refresh_button.clicked.connect(self.refresh_onboarding)
+        self.onboarding_action_buttons = {
+            "添加文件夹": guide_add_folder_button,
+            "创建演示样例": guide_demo_button,
+            "设为保护目录": guide_protect_button,
+            "开始扫描": guide_scan_button,
+            "应用保留规则": guide_rule_button,
+            "预览整理结果": guide_preview_button,
+            "保存方案": guide_profile_button,
+            "刷新向导": guide_refresh_button,
+        }
 
         self.ai_provider_combo.addItems(["自定义", "OpenAI", "DashScope", "DeepSeek", "Moonshot", "Zhipu"])
         self.ai_provider_combo.currentTextChanged.connect(self.apply_ai_provider_preset)
@@ -991,7 +1048,7 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left.setObjectName("Sidebar")
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(16, 16, 16, 16)
+        left_layout.setContentsMargins(8, 12, 8, 12)
         left_layout.setSpacing(8)
         left_layout.addWidget(section_label("扫描目录"))
         left_layout.addWidget(self.folder_list)
@@ -1010,13 +1067,27 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.rotate_hint_checkbox)
         left_layout.addWidget(section_label("默认保留策略"))
         left_layout.addWidget(self.strategy_combo)
-        left_layout.addLayout(scan_buttons)
         left_layout.addStretch(1)
         left_scroll = QScrollArea()
         left_scroll.setObjectName("SidebarScroll")
         left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_scroll.setWidget(left)
-        left_scroll.setMinimumWidth(260)
+
+        scan_action_footer = QWidget()
+        scan_action_footer.setObjectName("StickyActionFooter")
+        scan_action_footer_layout = QHBoxLayout(scan_action_footer)
+        scan_action_footer_layout.setContentsMargins(12, 8, 12, 8)
+        scan_action_footer_layout.setSpacing(8)
+        scan_action_footer_layout.addLayout(scan_buttons)
+        scan_settings_panel = QWidget()
+        scan_settings_panel.setObjectName("ScanSettingsPanel")
+        scan_settings_panel_layout = QVBoxLayout(scan_settings_panel)
+        scan_settings_panel_layout.setContentsMargins(0, 0, 0, 0)
+        scan_settings_panel_layout.setSpacing(0)
+        scan_settings_panel_layout.addWidget(left_scroll, 1)
+        scan_settings_panel_layout.addWidget(scan_action_footer)
+        scan_settings_panel.setMinimumWidth(230)
 
         self.group_mode_combo.addItems(["重复分组", "磁盘目录"])
         self.group_mode_combo.currentIndexChanged.connect(self.on_group_mode_changed)
@@ -1155,7 +1226,8 @@ class MainWindow(QMainWindow):
         duplicate_controls_layout.addWidget(section_label("批量保留规则"))
         duplicate_controls_layout.addWidget(self.bulk_keep_rule_combo)
         duplicate_controls_layout.addWidget(self.bulk_keep_keyword_input)
-        bulk_rule_actions = QHBoxLayout()
+        bulk_rule_actions = QVBoxLayout()
+        bulk_rule_actions.setSpacing(6)
         preview_rule_button = QPushButton("预览应用规则")
         preview_rule_button.clicked.connect(self.preview_bulk_keep_rule)
         apply_rule_button = QPushButton("应用到当前筛选结果")
@@ -1170,20 +1242,33 @@ class MainWindow(QMainWindow):
         self.ai_analyze_button.setToolTip("判断当前选中的图片；结果会显示在“AI 判断”页。")
         self.ai_batch_button.setToolTip("判断当前重复分组中的图片；结果会显示在“AI 判断”页。")
         inspection_actions.addWidget(compare_images_button, 0, 0)
-        inspection_actions.addWidget(reveal_button, 0, 1)
-        inspection_actions.addWidget(self.ai_analyze_button, 1, 0)
-        inspection_actions.addWidget(self.ai_batch_button, 1, 1)
+        inspection_actions.addWidget(reveal_button, 1, 0)
+        inspection_actions.addWidget(self.ai_analyze_button, 2, 0)
+        inspection_actions.addWidget(self.ai_batch_button, 3, 0)
         duplicate_controls_layout.addLayout(inspection_actions)
-        duplicate_controls_layout.addWidget(self.action_combo)
-        duplicate_controls_layout.addWidget(move_button)
         duplicate_controls_layout.addStretch(1)
 
         duplicate_controls_scroll = QScrollArea()
         duplicate_controls_scroll.setObjectName("DuplicateControlsScroll")
         duplicate_controls_scroll.setWidgetResizable(True)
         duplicate_controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        duplicate_controls_scroll.setMinimumWidth(230)
         duplicate_controls_scroll.setWidget(duplicate_controls)
+
+        processing_action_footer = QWidget()
+        processing_action_footer.setObjectName("StickyActionFooter")
+        processing_action_footer_layout = QVBoxLayout(processing_action_footer)
+        processing_action_footer_layout.setContentsMargins(12, 8, 12, 8)
+        processing_action_footer_layout.setSpacing(6)
+        processing_action_footer_layout.addWidget(self.action_combo)
+        processing_action_footer_layout.addWidget(move_button)
+        duplicate_controls_column = QWidget()
+        duplicate_controls_column.setObjectName("DuplicateControlsColumn")
+        duplicate_controls_column_layout = QVBoxLayout(duplicate_controls_column)
+        duplicate_controls_column_layout.setContentsMargins(0, 0, 0, 0)
+        duplicate_controls_column_layout.setSpacing(0)
+        duplicate_controls_column_layout.addWidget(duplicate_controls_scroll, 1)
+        duplicate_controls_column_layout.addWidget(processing_action_footer)
+        duplicate_controls_column.setMinimumWidth(220)
 
         duplicate_preview = QWidget()
         duplicate_preview.setObjectName("DuplicatePreview")
@@ -1201,14 +1286,14 @@ class MainWindow(QMainWindow):
 
         self.duplicate_review_splitter = QSplitter()
         self.duplicate_review_splitter.setObjectName("DuplicateReviewSplitter")
-        self.duplicate_review_splitter.addWidget(duplicate_controls_scroll)
+        self.duplicate_review_splitter.addWidget(duplicate_controls_column)
         self.duplicate_review_splitter.addWidget(duplicate_preview)
         self.duplicate_review_splitter.setChildrenCollapsible(False)
         self.duplicate_review_splitter.setHandleWidth(8)
         self.duplicate_review_splitter.setStretchFactor(0, 0)
         self.duplicate_review_splitter.setStretchFactor(1, 1)
         self.duplicate_review_splitter.setSizes([300, 420])
-        duplicate_preview.setMinimumWidth(240)
+        duplicate_preview.setMinimumWidth(230)
 
         self.duplicate_content_splitter = QSplitter(Qt.Orientation.Vertical)
         self.duplicate_content_splitter.setObjectName("DuplicateContentSplitter")
@@ -1418,6 +1503,7 @@ class MainWindow(QMainWindow):
         self.organize_video_input.setText(str(self.organize_targets.video_root))
         self.organize_document_input.setText(str(self.organize_targets.document_root))
         self.organize_other_input.setText(str(self.organize_targets.other_root))
+        self._show_organize_target_starts()
         self.organize_summary_label.setWordWrap(True)
         self.organize_summary_label.setObjectName("PageSummary")
         self.organize_summary_label.setText("先生成整理预览，再批量执行移动。")
@@ -1524,7 +1610,7 @@ class MainWindow(QMainWindow):
 
         self.duplicate_workspace = QSplitter()
         self.duplicate_workspace.setObjectName("DuplicateWorkspace")
-        self.duplicate_workspace.addWidget(left_scroll)
+        self.duplicate_workspace.addWidget(scan_settings_panel)
         self.duplicate_workspace.addWidget(groups_panel)
         self.duplicate_workspace.addWidget(right)
         self.duplicate_workspace.setChildrenCollapsible(False)
@@ -1533,32 +1619,63 @@ class MainWindow(QMainWindow):
         self.duplicate_workspace.setStretchFactor(1, 0)
         self.duplicate_workspace.setStretchFactor(2, 1)
         self.duplicate_workspace.setSizes([260, 300, 720])
-        groups_panel.setMinimumWidth(280)
-        right.setMinimumWidth(500)
+        groups_panel.setMinimumWidth(250)
+        right.setMinimumWidth(458)
 
         self.main_tabs = QTabWidget()
         self.main_tabs.setObjectName("MainNavigation")
         self.main_tabs.setDocumentMode(True)
-        self.main_tabs.setUsesScrollButtons(True)
-        self.main_tabs.tabBar().setExpanding(False)
+        self.main_tabs.tabBar().hide()
         tabs = self.main_tabs
-        tabs.addTab(onboarding_panel, "新手向导")
-        tabs.addTab(organize_panel, "整理中心")
-        tabs.addTab(self.duplicate_workspace, "重复处理")
-        tabs.addTab(operations_panel, "操作记录")
-        tabs.addTab(history_panel, "扫描历史")
-        tabs.addTab(ai_panel, "AI 判断")
-        tabs.addTab(health_panel, "健康诊断")
+        page_widgets = {
+            "onboarding": onboarding_panel,
+            "duplicates": self.duplicate_workspace,
+            "organizer": organize_panel,
+            "history": history_panel,
+            "operations": operations_panel,
+            "ai": ai_panel,
+            "health": health_panel,
+        }
+        for page_key, page_label in PAGE_DEFINITIONS:
+            index = tabs.addTab(page_widgets[page_key], page_label)
+            self.page_index_by_key[page_key] = index
+            self.page_key_by_index[index] = page_key
 
         self.main_tabs.currentChanged.connect(self.on_tab_changed)
         self._build_help_menu()
 
         container = QWidget()
         container.setObjectName("AppRoot")
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.addWidget(tabs)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.navigation_rail = self._build_navigation_rail()
+        layout.addWidget(self.navigation_rail)
+
+        self.content_shell = QWidget()
+        self.content_shell.setObjectName("ContentShell")
+        self.content_shell.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        content_layout = QVBoxLayout(self.content_shell)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self.page_header = QWidget()
+        self.page_header.setObjectName("PageHeader")
+        self.page_header.setFixedHeight(56)
+        page_header_layout = QHBoxLayout(self.page_header)
+        page_header_layout.setContentsMargins(20, 0, 20, 0)
+        self.page_title_label = QLabel()
+        self.page_title_label.setObjectName("PageTitle")
+        page_header_layout.addWidget(self.page_title_label)
+        page_header_layout.addStretch(1)
+        content_layout.addWidget(self.page_header)
+        content_layout.addWidget(tabs, 1)
+        layout.addWidget(self.content_shell, 1)
         self.setCentralWidget(container)
+
+        self._update_navigation_for_width(self.width())
+        self.on_tab_changed(self.main_tabs.currentIndex())
 
         status_bar = self.statusBar()
         status_bar.setObjectName("AppStatusBar")
@@ -1566,8 +1683,159 @@ class MainWindow(QMainWindow):
         status_bar.addWidget(self.status_label, 1)
         status_bar.addPermanentWidget(self.progress)
 
+    def _build_navigation_rail(self) -> QWidget:
+        rail = QWidget()
+        rail.setObjectName("NavigationRail")
+        rail.setFixedWidth(NAVIGATION_EXPANDED_WIDTH)
+        rail_layout = QVBoxLayout(rail)
+        rail_layout.setContentsMargins(8, 12, 8, 10)
+        rail_layout.setSpacing(4)
+
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(4, 0, 0, 8)
+        brand_row.setSpacing(6)
+        self.navigation_logo_label = QLabel()
+        self.navigation_logo_label.setObjectName("NavigationLogo")
+        self.navigation_logo_label.setPixmap(load_app_icon().pixmap(QSize(26, 26)))
+        self.navigation_logo_label.setFixedSize(28, 28)
+        brand_row.addWidget(self.navigation_logo_label)
+        self.navigation_brand_label = QLabel(APP_NAME)
+        self.navigation_brand_label.setObjectName("NavigationBrand")
+        brand_row.addWidget(self.navigation_brand_label, 1)
+        self.navigation_toggle_button = QToolButton()
+        self.navigation_toggle_button.setObjectName("NavigationToggle")
+        self.navigation_toggle_button.setAutoRaise(True)
+        self.navigation_toggle_button.setFixedSize(32, 32)
+        self.navigation_toggle_button.clicked.connect(self.toggle_navigation)
+        brand_row.addWidget(self.navigation_toggle_button)
+        rail_layout.addLayout(brand_row)
+
+        self.navigation_button_group = QButtonGroup(self)
+        self.navigation_button_group.setExclusive(True)
+        page_icons = {
+            "onboarding": QStyle.StandardPixmap.SP_DialogApplyButton,
+            "duplicates": QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            "organizer": QStyle.StandardPixmap.SP_DirIcon,
+            "history": QStyle.StandardPixmap.SP_FileDialogListView,
+            "operations": QStyle.StandardPixmap.SP_BrowserReload,
+            "ai": QStyle.StandardPixmap.SP_ComputerIcon,
+            "health": QStyle.StandardPixmap.SP_MessageBoxInformation,
+        }
+
+        for group_label, page_keys in (
+            ("工作区", ("onboarding", "duplicates", "organizer")),
+            ("记录与分析", ("history", "operations", "ai")),
+        ):
+            label = QLabel(group_label)
+            label.setObjectName("NavigationGroupLabel")
+            rail_layout.addWidget(label)
+            self.navigation_group_labels.append(label)
+            for page_key in page_keys:
+                rail_layout.addWidget(self._create_navigation_button(page_key, page_icons[page_key]))
+
+        rail_layout.addStretch(1)
+        rail_layout.addWidget(self._create_navigation_button("health", page_icons["health"]))
+
+        self.navigation_help_button = QToolButton()
+        self.navigation_help_button.setObjectName("NavigationItem")
+        self.navigation_help_button.setText("帮助")
+        self.navigation_help_button.setAccessibleName("帮助")
+        self.navigation_help_button.setToolTip("帮助")
+        self.navigation_help_button.setIcon(
+            monochrome_icon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton))
+        )
+        self.navigation_help_button.setIconSize(QSize(18, 18))
+        self.navigation_help_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.navigation_help_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.navigation_help_button.setMenu(self.help_menu)
+        rail_layout.addWidget(self.navigation_help_button)
+
+        self.navigation_version_label = QLabel(f"v{APP_VERSION}")
+        self.navigation_version_label.setObjectName("NavigationVersion")
+        rail_layout.addWidget(self.navigation_version_label)
+        return rail
+
+    def _create_navigation_button(
+        self,
+        page_key: str,
+        standard_icon: QStyle.StandardPixmap,
+    ) -> QToolButton:
+        page_label = self.page_label_by_key[page_key]
+        button = QToolButton()
+        button.setObjectName("NavigationItem")
+        button.setProperty("pageKey", page_key)
+        button.setText(page_label)
+        button.setAccessibleName(page_label)
+        button.setToolTip(page_label)
+        button.setIcon(monochrome_icon(self.style().standardIcon(standard_icon)))
+        button.setIconSize(QSize(18, 18))
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setCheckable(True)
+        button.clicked.connect(lambda _checked=False, key=page_key: self.switch_to_page(key))
+        self.navigation_button_group.addButton(button, self.page_index_by_key[page_key])
+        self.navigation_buttons[page_key] = button
+        return button
+
+    def toggle_navigation(self) -> None:
+        if self.navigation_forced_collapsed and self.navigation_collapsed:
+            return
+        self.navigation_user_collapsed = not self.navigation_collapsed
+        self._set_navigation_collapsed(self.navigation_user_collapsed)
+
+    def _update_navigation_for_width(self, width: int) -> None:
+        self.navigation_forced_collapsed = width < NAVIGATION_COLLAPSE_BREAKPOINT
+        self.navigation_toggle_button.setEnabled(not self.navigation_forced_collapsed)
+        self._set_navigation_collapsed(self.navigation_forced_collapsed or self.navigation_user_collapsed)
+
+    def _set_navigation_collapsed(self, collapsed: bool) -> None:
+        if not hasattr(self, "navigation_rail"):
+            return
+        self.navigation_collapsed = collapsed
+        self.navigation_rail.setFixedWidth(
+            NAVIGATION_COLLAPSED_WIDTH if collapsed else NAVIGATION_EXPANDED_WIDTH
+        )
+        self.navigation_brand_label.setVisible(not collapsed)
+        self.navigation_logo_label.setVisible(not collapsed)
+        self.navigation_version_label.setVisible(not collapsed)
+        for label in self.navigation_group_labels:
+            label.setVisible(not collapsed)
+        tool_button_style = (
+            Qt.ToolButtonStyle.ToolButtonIconOnly
+            if collapsed
+            else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        for button in (*self.navigation_buttons.values(), self.navigation_help_button):
+            button.setToolButtonStyle(tool_button_style)
+        arrow = (
+            QStyle.StandardPixmap.SP_ArrowRight
+            if collapsed
+            else QStyle.StandardPixmap.SP_ArrowLeft
+        )
+        self.navigation_toggle_button.setIcon(monochrome_icon(self.style().standardIcon(arrow)))
+        if collapsed and self.navigation_forced_collapsed:
+            toggle_label = "窗口加宽后可展开导航"
+        else:
+            toggle_label = "展开导航" if collapsed else "收起导航"
+        self.navigation_toggle_button.setToolTip(toggle_label)
+        self.navigation_toggle_button.setAccessibleName(toggle_label)
+
+    def _focus_initial_content(self) -> None:
+        self.onboarding_table.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not self.initial_content_focus_assigned:
+            self.initial_content_focus_assigned = True
+            QTimer.singleShot(0, self._focus_initial_content)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if hasattr(self, "navigation_rail"):
+            self._update_navigation_for_width(event.size().width())
+
     def _build_help_menu(self) -> None:
         help_menu = self.menuBar().addMenu("帮助")
+        self.help_menu = help_menu
         actions = [
             ("打开三分钟上手", lambda _checked=False: self.open_support_document("quickstart")),
             ("打开使用手册", lambda _checked=False: self.open_support_document("readme")),
@@ -1600,13 +1868,21 @@ class MainWindow(QMainWindow):
         about_action = QAction(f"关于 {APP_NAME}", self)
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
+        self.menuBar().setVisible(False)
 
     def switch_to_tab(self, tab_name: str) -> bool:
-        for index in range(self.main_tabs.count()):
-            if self.main_tabs.tabText(index) == tab_name:
-                self.main_tabs.setCurrentIndex(index)
-                return True
-        return False
+        return self.switch_to_page(tab_name)
+
+    def switch_to_page(self, page_key_or_label: str) -> bool:
+        page_key = (
+            page_key_or_label
+            if page_key_or_label in self.page_index_by_key
+            else self.page_key_by_label.get(page_key_or_label)
+        )
+        if page_key is None:
+            return False
+        self.main_tabs.setCurrentIndex(self.page_index_by_key[page_key])
+        return True
 
     def open_support_document(self, key: str) -> None:
         filename = SUPPORT_DOCUMENTS.get(key, key)
@@ -1636,25 +1912,100 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget {
-                font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+                font-family: "Microsoft YaHei UI", "Segoe UI Variable Text", "Segoe UI", sans-serif;
                 font-size: 13px;
-                color: #1f2328;
-                background: #f6f7f9;
+                color: #212121;
             }
-            #AppRoot {
-                background: #f6f7f9;
-            }
-            #Sidebar, #GroupsPanel, #DetailPanel {
+            QMainWindow, #AppRoot, #ContentShell {
                 background: #ffffff;
-                border: 1px solid #d8dee4;
-                border-radius: 6px;
             }
-            #ContentPanel {
+            #NavigationRail {
+                background: #f7f7f8;
+                border-right: 1px solid #e5e5e5;
+            }
+            QLabel#NavigationLogo {
+                background: transparent;
+            }
+            QLabel#NavigationBrand {
+                color: #212121;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            QLabel#NavigationGroupLabel {
+                color: #6f6f6f;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 12px 8px 4px 8px;
+            }
+            QLabel#NavigationVersion {
+                color: #6f6f6f;
+                font-size: 12px;
+                padding: 4px 10px 2px 10px;
+            }
+            QToolButton#NavigationItem {
+                min-height: 36px;
+                border: none;
+                border-radius: 7px;
+                padding: 2px 10px;
+                color: #353535;
+                background: transparent;
+                text-align: left;
+                font-weight: 500;
+            }
+            QToolButton#NavigationItem:hover {
+                background: #eeeeef;
+            }
+            QToolButton#NavigationItem:checked {
+                color: #0d0d0d;
+                background: #e7e7e8;
+                font-weight: 600;
+            }
+            QToolButton#NavigationItem:pressed {
+                background: #ddddde;
+            }
+            QToolButton#NavigationItem:focus {
+                border: 2px solid #0285ff;
+                padding: 0 8px;
+            }
+            QToolButton#NavigationItem::menu-indicator {
+                image: none;
+                width: 0;
+            }
+            QToolButton#NavigationToggle {
+                border: none;
+                border-radius: 7px;
+                background: transparent;
+            }
+            QToolButton#NavigationToggle:hover {
+                background: #e9e9ea;
+            }
+            QToolButton#NavigationToggle:disabled {
+                color: #8a8a8a;
+            }
+            QToolButton#NavigationToggle:focus {
+                border: 2px solid #0285ff;
+            }
+            #PageHeader {
+                background: #ffffff;
+                border-bottom: 1px solid #e5e5e5;
+            }
+            QLabel#PageTitle {
+                color: #212121;
+                font-size: 18px;
+                font-weight: 600;
+            }
+            #ContentPanel, #DetailPanel, #OrganizerPreview,
+            #DuplicateResults, #DuplicatePreview {
                 background: #ffffff;
                 border: none;
             }
             #Sidebar {
-                background: #fbfbfc;
+                background: #f7f7f8;
+                border: none;
+            }
+            #GroupsPanel {
+                background: #ffffff;
+                border: none;
             }
             #SidebarScroll, #OrganizerSettingsScroll, #DuplicateControlsScroll, #FileDetailScroll {
                 border: none;
@@ -1665,214 +2016,281 @@ class MainWindow(QMainWindow):
                 background: transparent;
             }
             #OrganizerSettings, #DuplicateControls {
-                background: #fbfbfc;
+                background: #f7f7f8;
             }
-            #OrganizerPreview, #DuplicateResults, #DuplicatePreview {
-                background: #ffffff;
+            #ScanSettingsPanel, #DuplicateControlsColumn, #StickyActionFooter {
+                background: #f7f7f8;
+            }
+            #StickyActionFooter {
+                border-top: 1px solid #e5e5e5;
             }
             #FileDetailScroll {
-                background: #fbfbfc;
-                border-top: 1px solid #eaeef2;
+                background: #f7f7f8;
+                border-top: 1px solid #e5e5e5;
             }
             #DuplicateWorkspace, #OrganizerWorkspace,
             #DuplicateContentSplitter, #DuplicateReviewSplitter {
-                background: #f6f7f9;
+                background: #ffffff;
             }
             #DuplicateWorkspace::handle, #OrganizerWorkspace::handle,
             #DuplicateContentSplitter::handle, #DuplicateReviewSplitter::handle {
-                background: #d8dee4;
-                margin: 0 3px;
+                background: transparent;
             }
-            #DuplicateContentSplitter::handle {
-                margin: 3px 0;
+            QSplitter::handle:horizontal {
+                border-left: 1px solid #e5e5e5;
+            }
+            QSplitter::handle:vertical {
+                border-top: 1px solid #e5e5e5;
             }
             #DuplicateWorkspace::handle:hover, #OrganizerWorkspace::handle:hover,
             #DuplicateContentSplitter::handle:hover, #DuplicateReviewSplitter::handle:hover {
-                background: #54aeff;
+                background: #f1f1f1;
             }
             QPushButton {
-                min-height: 28px;
+                min-height: 20px;
                 padding: 6px 10px;
-                border: 1px solid #d0d7de;
-                border-radius: 6px;
-                background: #f6f8fa;
-                color: #24292f;
+                border: 1px solid #d1d1d1;
+                border-radius: 7px;
+                background: #ffffff;
+                color: #212121;
                 font-weight: 500;
             }
             QPushButton:hover {
-                background: #eef2f6;
-                border-color: #afb8c1;
+                background: #f1f1f1;
+                border-color: #bdbdbd;
             }
             QPushButton:pressed {
-                background: #e6ebf0;
+                background: #e7e7e7;
             }
             QPushButton:focus {
-                border: 2px solid #0969da;
+                border: 2px solid #0285ff;
                 padding: 5px 9px;
             }
             QPushButton:disabled {
-                color: #8c959f;
-                background: #f0f2f4;
-                border-color: #d8dee4;
+                color: #767676;
+                background: #f4f4f4;
+                border-color: #e1e1e1;
             }
             QPushButton#PrimaryButton {
                 color: #ffffff;
-                background: #0969da;
-                border-color: #0969da;
+                background: #0d0d0d;
+                border-color: #0d0d0d;
                 font-weight: 600;
             }
             QPushButton#PrimaryButton:hover {
-                background: #0550ae;
-                border-color: #0550ae;
+                background: #2f2f2f;
+                border-color: #2f2f2f;
             }
             QPushButton#PrimaryButton:pressed {
-                background: #033d8b;
+                background: #000000;
             }
             QPushButton#PrimaryButton:disabled {
-                color: #ffffff;
-                background: #8c959f;
-                border-color: #8c959f;
+                color: #767676;
+                background: #f0f0f0;
+                border-color: #dedede;
             }
             QPushButton#DangerButton {
-                color: #cf222e;
+                color: #b42318;
                 background: #ffffff;
-                border-color: #cf222e;
+                border-color: #d9a29d;
             }
             QPushButton#DangerButton:hover {
-                color: #a40e26;
-                background: #fff1f3;
-                border-color: #a40e26;
+                color: #8f1c13;
+                background: #fff5f4;
+                border-color: #b42318;
             }
             QPushButton#DangerButton:disabled {
-                color: #8c959f;
-                background: #f6f8fa;
-                border-color: #d8dee4;
+                color: #8a8a8a;
+                background: #f7f7f8;
+                border-color: #e1e1e1;
             }
             QComboBox, QSpinBox, QLineEdit {
-                min-height: 28px;
-                padding: 4px 8px;
-                border: 1px solid #d0d7de;
-                border-radius: 6px;
+                min-height: 20px;
+                padding: 6px 9px;
+                border: 1px solid #d1d1d1;
+                border-radius: 7px;
                 background: #ffffff;
-                selection-background-color: #0969da;
+                color: #212121;
+                selection-background-color: #d9d9d9;
+                selection-color: #212121;
+            }
+            QComboBox:hover, QSpinBox:hover, QLineEdit:hover {
+                border-color: #bdbdbd;
             }
             QComboBox:focus, QSpinBox:focus, QLineEdit:focus {
-                border-color: #0969da;
+                border: 2px solid #0285ff;
+                padding: 5px 8px;
+            }
+            QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled,
+            QLineEdit:read-only {
+                color: #767676;
+                background: #f7f7f8;
+                border-color: #e1e1e1;
             }
             QListWidget, QTableWidget, QTreeWidget, QPlainTextEdit {
-                border: 1px solid #d8dee4;
-                border-radius: 6px;
+                border: 1px solid #e1e1e1;
+                border-radius: 7px;
                 background: #ffffff;
-                alternate-background-color: #f6f8fa;
-                gridline-color: #eaeef2;
+                alternate-background-color: #fafafa;
+                gridline-color: transparent;
             }
-            QListWidget::item:selected, QTableWidget::item:selected {
-                background: #ddf4ff;
-                color: #0969da;
+            QListWidget:focus, QTableWidget:focus,
+            QTreeWidget:focus, QPlainTextEdit:focus {
+                border: 2px solid #0285ff;
+            }
+            QPlainTextEdit:read-only {
+                background: #f7f7f8;
+            }
+            QListWidget::item:selected, QTableWidget::item:selected,
+            QTreeWidget::item:selected {
+                background: #e9e9e9;
+                color: #212121;
             }
             QListWidget::item {
-                padding: 6px;
-                border-radius: 5px;
+                padding: 7px;
+                border-radius: 6px;
+            }
+            QListWidget::item:hover, QTreeWidget::item:hover {
+                background: #f1f1f1;
+            }
+            QTableWidget::item {
+                padding: 4px 6px;
+                border-bottom: 1px solid #eeeeee;
             }
             QHeaderView::section {
-                background: #f6f8fa;
+                background: #f7f7f8;
                 border: 0;
-                border-right: 1px solid #eaeef2;
-                border-bottom: 1px solid #d8dee4;
-                padding: 6px;
+                border-bottom: 1px solid #e1e1e1;
+                padding: 7px 6px;
                 font-weight: 600;
-                color: #57606a;
+                color: #5f5f5f;
             }
             QLabel {
-                color: #57606a;
+                color: #212121;
                 background: transparent;
             }
             QLabel#SectionTitle {
-                color: #24292f;
+                color: #212121;
                 font-weight: 600;
-                padding: 6px 0 2px 0;
+                padding: 8px 0 3px 0;
             }
             QLabel#PageSummary {
-                color: #24292f;
-                font-size: 14px;
+                color: #212121;
+                font-size: 15px;
                 font-weight: 600;
                 padding-bottom: 4px;
             }
             QLabel#PanelStatusText {
-                color: #424a53;
-                background: #f6f8fa;
-                border-left: 3px solid #54aeff;
-                padding: 8px 10px;
+                color: #555555;
+                background: #f3f3f4;
+                border: none;
+                border-radius: 7px;
+                padding: 9px 10px;
             }
             QLabel#SafetyHint {
-                color: #1a6334;
-                background: #f0fff4;
-                border: 1px solid #b7dfc2;
-                border-radius: 6px;
+                color: #0f6a3a;
+                background: #f1fbf5;
+                border: 1px solid #b9dec8;
+                border-radius: 7px;
                 padding: 9px 10px;
             }
             QTabWidget::pane {
                 border: none;
                 background: #ffffff;
             }
-            QTabBar::tab {
-                min-width: 72px;
-                padding: 9px 14px;
-                background: transparent;
-                border: none;
-                border-bottom: 3px solid transparent;
-                color: #57606a;
-            }
-            QTabBar::tab:selected {
-                background: #ffffff;
-                color: #0969da;
-                font-weight: 600;
-                border-bottom-color: #0969da;
-            }
-            QTabBar::tab:hover {
-                color: #24292f;
-                background: #eef2f6;
-            }
-            QTabBar::tab:focus {
-                color: #0969da;
-            }
             QMenuBar {
-                color: #424a53;
+                color: #353535;
                 background: #ffffff;
-                border-bottom: 1px solid #d8dee4;
+                border-bottom: 1px solid #e5e5e5;
             }
             QMenuBar::item:selected {
-                color: #0969da;
-                background: #eef6ff;
+                color: #212121;
+                background: #f1f1f1;
+            }
+            QMenu {
+                color: #212121;
+                background: #ffffff;
+                border: 1px solid #d1d1d1;
+                border-radius: 7px;
+                padding: 6px;
+            }
+            QMenu::item {
+                padding: 7px 24px 7px 10px;
+                border-radius: 6px;
+            }
+            QMenu::item:selected {
+                background: #eeeeee;
             }
             QStatusBar#AppStatusBar {
-                background: #ffffff;
-                border-top: 1px solid #d8dee4;
+                min-height: 26px;
+                background: #f7f7f8;
+                border-top: 1px solid #e5e5e5;
             }
             QStatusBar#AppStatusBar::item {
                 border: none;
             }
             QLabel#GlobalStatusText {
-                color: #424a53;
-                padding-left: 6px;
+                color: #5f5f5f;
+                padding-left: 8px;
             }
             QProgressBar {
                 height: 16px;
-                border: 1px solid #d0d7de;
+                border: 1px solid #d1d1d1;
                 border-radius: 8px;
                 text-align: center;
                 background: #ffffff;
-                color: #57606a;
+                color: #5f5f5f;
             }
             QProgressBar::chunk {
-                background-color: #0969da;
+                background-color: #212121;
                 border-radius: 7px;
+            }
+            QCheckBox {
+                spacing: 7px;
+                color: #353535;
+                border: 2px solid transparent;
+                border-radius: 5px;
+                padding: 2px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox:focus {
+                color: #0d0d0d;
+                border-color: #0285ff;
+            }
+            QScrollBar:vertical {
+                width: 10px;
+                margin: 2px;
+                background: transparent;
+            }
+            QScrollBar:horizontal {
+                height: 10px;
+                margin: 2px;
+                background: transparent;
+            }
+            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+                min-height: 30px;
+                min-width: 30px;
+                border-radius: 4px;
+                background: #c9c9c9;
+            }
+            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+                background: #a9a9a9;
+            }
+            QScrollBar::add-line, QScrollBar::sub-line,
+            QScrollBar::add-page, QScrollBar::sub-page {
+                width: 0;
+                height: 0;
+                background: transparent;
             }
             QToolTip {
                 color: #ffffff;
-                background: #24292f;
-                border: 1px solid #24292f;
-                padding: 5px 7px;
+                background: #212121;
+                border: 1px solid #212121;
+                border-radius: 5px;
+                padding: 6px 8px;
             }
             """
         )
@@ -1936,7 +2354,10 @@ class MainWindow(QMainWindow):
 
     def _update_destination_label(self) -> None:
         self.destination_label.setWordWrap(True)
-        self.destination_label.setText(f"移动到：{self.destination}")
+        display_path = str(self.destination)
+        for separator in ("\\", "/", "_"):
+            display_path = display_path.replace(separator, f"{separator}\u200b")
+        self.destination_label.setText(f"移动到：\n{display_path}")
 
     def choose_organize_target(self, field: QLineEdit) -> None:
         current = field.text().strip() or str(self.destination)
@@ -2133,6 +2554,7 @@ class MainWindow(QMainWindow):
         self.organize_video_input.setText(str(self._profile_path_or_default(profile.video_target, self.destination / "Videos")))
         self.organize_document_input.setText(str(self._profile_path_or_default(profile.document_target, self.destination / "Documents")))
         self.organize_other_input.setText(str(self._profile_path_or_default(profile.other_target, self.destination / "Others")))
+        self._show_organize_target_starts()
         self.organize_targets = self.current_organize_targets()
         self.organize_preview_items = []
         self.organize_preview_signature = None
@@ -2147,6 +2569,15 @@ class MainWindow(QMainWindow):
 
     def _profile_path_or_default(self, path: Path, default: Path) -> Path:
         return default if str(path).strip() in {"", "."} else path
+
+    def _show_organize_target_starts(self) -> None:
+        for target_input in (
+            self.organize_photo_input,
+            self.organize_video_input,
+            self.organize_document_input,
+            self.organize_other_input,
+        ):
+            target_input.setCursorPosition(0)
 
     def _set_combo_text(self, combo: QComboBox, value: str) -> None:
         if not value:
@@ -2185,6 +2616,7 @@ class MainWindow(QMainWindow):
         self.organize_video_input.setText(str(self.organize_targets.video_root))
         self.organize_document_input.setText(str(self.organize_targets.document_root))
         self.organize_other_input.setText(str(self.organize_targets.other_root))
+        self._show_organize_target_starts()
         self._load_profiles()
 
     def _save_settings(self) -> None:
@@ -2218,24 +2650,29 @@ class MainWindow(QMainWindow):
             self.on_scan_finished(groups, restored=True)
 
     def on_tab_changed(self, index: int) -> None:
-        tab_name = self.main_tabs.tabText(index)
-        if tab_name == "新手向导":
+        page_key = self.page_key_by_index.get(index)
+        if page_key is None:
+            return
+        page_label = self.page_label_by_key[page_key]
+        if hasattr(self, "page_title_label"):
+            self.page_title_label.setText(page_label)
+        navigation_button = self.navigation_buttons.get(page_key)
+        if navigation_button is not None:
+            navigation_button.setChecked(True)
+        if page_key == "onboarding":
             self.refresh_onboarding()
-        elif tab_name == "操作记录" and not self.operations_loaded:
+        elif page_key == "operations" and not self.operations_loaded:
             self.refresh_operations()
             self.operations_loaded = True
-        elif tab_name == "扫描历史" and not self.history_loaded:
+        elif page_key == "history" and not self.history_loaded:
             self.refresh_history()
             self.history_loaded = True
-        elif tab_name == "AI 判断" and not self.ai_loaded:
+        elif page_key == "ai" and not self.ai_loaded:
             self.refresh_ai_results()
             self.ai_loaded = True
 
     def _set_main_tab(self, label: str) -> None:
-        for index in range(self.main_tabs.count()):
-            if self.main_tabs.tabText(index) == label:
-                self.main_tabs.setCurrentIndex(index)
-                return
+        self.switch_to_page(label)
 
     def _onboarding_snapshot(self) -> OnboardingSnapshot:
         keep_selected_count = sum(
@@ -2268,6 +2705,17 @@ class MainWindow(QMainWindow):
         steps = build_onboarding_steps(self._onboarding_snapshot())
         self.onboarding_summary_label.setText(onboarding_summary(steps))
         self.onboarding_guidance_label.setText(onboarding_primary_guidance(steps))
+        next_step = next(
+            (step for step in steps if step.status in {STATUS_NEXT, STATUS_RECOMMENDED}),
+            None,
+        )
+        primary_action = next_step.action if next_step is not None else None
+        for action, button in self.onboarding_action_buttons.items():
+            object_name = "PrimaryButton" if action == primary_action else ""
+            if button.objectName() != object_name:
+                button.setObjectName(object_name)
+                button.style().unpolish(button)
+                button.style().polish(button)
         self.onboarding_table.setRowCount(len(steps))
         for row, step in enumerate(steps):
             values = [step.status, step.title, step.detail, step.action]
@@ -2285,7 +2733,7 @@ class MainWindow(QMainWindow):
         if status == "下一步":
             return QColor("#0969da")
         if status == "建议":
-            return QColor("#bf8700")
+            return QColor("#8a5a00")
         return QColor("#57606a")
 
     def guide_add_folder(self) -> None:
