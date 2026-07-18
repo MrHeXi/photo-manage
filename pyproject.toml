@@ -17,4 +17,4 @@ dependencies = [
 include = ["photo_dedupe*"]
 
 [tool.setuptools.package-data]
-photo_dedupe = ["assets/*.ico", "assets/*.png"]
+photo_dedupe = ["assets/*.ico", "assets/*.png", "assets/*.svg", "assets/*.txt"]

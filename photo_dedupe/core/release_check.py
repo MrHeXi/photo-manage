@@ -83,13 +83,25 @@ def _check_required_files(root: Path, items: list[ReleaseCheckItem]) -> None:
 
 
 def _check_assets(root: Path, items: list[ReleaseCheckItem]) -> None:
-    icon = root / "photo_dedupe" / "assets" / "app_icon.ico"
-    png = root / "photo_dedupe" / "assets" / "app_icon.png"
-    missing = [path.name for path in (icon, png) if not path.exists() or path.stat().st_size == 0]
+    assets_root = root / "photo_dedupe" / "assets"
+    required = (
+        "app_icon.ico",
+        "app_icon.png",
+        "lucide-chevron-down.svg",
+        "lucide-chevron-up.svg",
+        "lucide-chevron-down-disabled.svg",
+        "lucide-chevron-up-disabled.svg",
+        "LUCIDE-LICENSE.txt",
+    )
+    missing = [
+        filename
+        for filename in required
+        if not (assets_root / filename).exists() or (assets_root / filename).stat().st_size == 0
+    ]
     if missing:
-        items.append(ReleaseCheckItem("品牌图标", STATUS_ERROR, "缺少或为空：" + ", ".join(missing)))
+        items.append(ReleaseCheckItem("界面资源", STATUS_ERROR, "缺少或为空：" + ", ".join(missing)))
     else:
-        items.append(ReleaseCheckItem("品牌图标", STATUS_OK, "ICO 和 PNG 均存在"))
+        items.append(ReleaseCheckItem("界面资源", STATUS_OK, "品牌图标、控件图标和许可证均存在"))
 
 
 def _check_version(root: Path, items: list[ReleaseCheckItem]) -> None:

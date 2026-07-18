@@ -35,10 +35,12 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QSpinBox,
     QStyle,
+    QStyledItemDelegate,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -255,6 +257,13 @@ def configure_data_table(table: QTableWidget) -> None:
     table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
     table.setWordWrap(False)
     table.verticalHeader().setDefaultSectionSize(32)
+
+
+class ComboBoxItemDelegate(QStyledItemDelegate):
+    def sizeHint(self, option, index):  # type: ignore[override]
+        size = super().sizeHint(option, index)
+        size.setHeight(max(size.height(), 32))
+        return size
 
 
 class ScanWorker(QThread):
@@ -532,6 +541,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_settings()
         self._apply_styles()
+        self._configure_combo_boxes()
         self._update_destination_label()
         self.refresh_health_diagnostics()
         self.refresh_onboarding()
@@ -554,6 +564,10 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         return reply == QMessageBox.StandardButton.Yes
+
+    def _configure_combo_boxes(self) -> None:
+        for combo in self.findChildren(QComboBox):
+            combo.setItemDelegate(ComboBoxItemDelegate(combo))
 
     def _show_task_progress(self, maximum: int, value: int = 0) -> None:
         safe_maximum = max(maximum, 1)
@@ -907,6 +921,7 @@ class MainWindow(QMainWindow):
                 "保留路径不含关键词",
             ]
         )
+        self.bulk_keep_rule_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.bulk_keep_keyword_input.setPlaceholderText("关键词，例如 相册、原图、工作、backup")
         self.organize_rule_combo.addItems(["按拍摄年月", "按拍摄日期", "按文件类型", "按相机型号"])
         self.organize_rule_combo.setToolTip("只影响整理预览中的建议目标，不会立即移动文件。")
@@ -1156,8 +1171,8 @@ class MainWindow(QMainWindow):
         groups_layout.addWidget(self.group_type_filter_combo)
         groups_layout.addWidget(self.group_sort_combo)
         groups_layout.addWidget(self.group_search_input)
-        self.group_min_size_unit_combo.setFixedWidth(64)
-        self.group_max_size_unit_combo.setFixedWidth(64)
+        self.group_min_size_unit_combo.setFixedWidth(72)
+        self.group_max_size_unit_combo.setFixedWidth(72)
         group_size_filters = QGridLayout()
         group_size_filters.setHorizontalSpacing(6)
         group_size_filters.setVerticalSpacing(6)
@@ -1909,8 +1924,7 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_styles(self) -> None:
-        self.setStyleSheet(
-            """
+        style_sheet = """
             QWidget {
                 font-family: "Microsoft YaHei UI", "Segoe UI Variable Text", "Segoe UI", sans-serif;
                 font-size: 13px;
@@ -2127,6 +2141,114 @@ class MainWindow(QMainWindow):
                 background: #f7f7f8;
                 border-color: #e1e1e1;
             }
+            QComboBox {
+                padding-right: 36px;
+            }
+            QComboBox:focus {
+                padding-right: 35px;
+            }
+            QComboBox:on {
+                border-color: #0285ff;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 32px;
+                border: none;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+                background: transparent;
+            }
+            QComboBox::drop-down:hover {
+                background: #f3f3f3;
+            }
+            QComboBox::drop-down:pressed, QComboBox::drop-down:on {
+                background: #e9e9e9;
+            }
+            QComboBox::drop-down:disabled {
+                background: transparent;
+            }
+            QComboBox::down-arrow {
+                image: url("__CHEVRON_DOWN__");
+                width: 14px;
+                height: 14px;
+            }
+            QComboBox::down-arrow:on {
+                image: url("__CHEVRON_UP__");
+            }
+            QComboBox::down-arrow:disabled {
+                image: url("__CHEVRON_DOWN_DISABLED__");
+            }
+            QComboBox QAbstractItemView {
+                outline: 0;
+                border: 1px solid #d1d1d1;
+                border-radius: 7px;
+                padding: 4px;
+                background: #ffffff;
+                color: #212121;
+                selection-background-color: #e9e9e9;
+                selection-color: #212121;
+            }
+            QComboBox QAbstractItemView::item {
+                min-height: 28px;
+                padding: 4px 8px;
+                border-radius: 5px;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background: #f3f3f3;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background: #e9e9e9;
+                color: #212121;
+            }
+            QComboBox QAbstractItemView::item:disabled {
+                color: #8a8a8a;
+            }
+            QSpinBox {
+                padding-right: 32px;
+            }
+            QSpinBox:focus {
+                padding-right: 31px;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                subcontrol-origin: padding;
+                width: 28px;
+                border: none;
+                background: transparent;
+            }
+            QSpinBox::up-button {
+                subcontrol-position: top right;
+                border-top-right-radius: 6px;
+            }
+            QSpinBox::down-button {
+                subcontrol-position: bottom right;
+                border-bottom-right-radius: 6px;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background: #f3f3f3;
+            }
+            QSpinBox::up-button:pressed, QSpinBox::down-button:pressed {
+                background: #e9e9e9;
+            }
+            QSpinBox::up-button:disabled, QSpinBox::down-button:disabled {
+                background: transparent;
+            }
+            QSpinBox::up-arrow {
+                image: url("__CHEVRON_UP__");
+                width: 11px;
+                height: 11px;
+            }
+            QSpinBox::down-arrow {
+                image: url("__CHEVRON_DOWN__");
+                width: 11px;
+                height: 11px;
+            }
+            QSpinBox::up-arrow:off, QSpinBox::up-arrow:disabled {
+                image: url("__CHEVRON_UP_DISABLED__");
+            }
+            QSpinBox::down-arrow:off, QSpinBox::down-arrow:disabled {
+                image: url("__CHEVRON_DOWN_DISABLED__");
+            }
             QListWidget, QTableWidget, QTreeWidget, QPlainTextEdit {
                 border: 1px solid #e1e1e1;
                 border-radius: 7px;
@@ -2293,7 +2415,15 @@ class MainWindow(QMainWindow):
                 padding: 6px 8px;
             }
             """
-        )
+        icon_assets = {
+            "__CHEVRON_DOWN__": "lucide-chevron-down.svg",
+            "__CHEVRON_UP__": "lucide-chevron-up.svg",
+            "__CHEVRON_DOWN_DISABLED__": "lucide-chevron-down-disabled.svg",
+            "__CHEVRON_UP_DISABLED__": "lucide-chevron-up-disabled.svg",
+        }
+        for token, filename in icon_assets.items():
+            style_sheet = style_sheet.replace(token, app_asset_path(filename).resolve().as_posix())
+        self.setStyleSheet(style_sheet)
         self.retention_hint_label.setWordWrap(True)
 
     def add_folder(self) -> None:

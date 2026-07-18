@@ -191,10 +191,29 @@ class BrandingAssetTests(unittest.TestCase):
     def test_app_icon_assets_exist(self) -> None:
         assets = Path(__file__).resolve().parents[1] / "photo_dedupe" / "assets"
 
-        for filename in ("app_icon.ico", "app_icon.png"):
+        filenames = (
+            "app_icon.ico",
+            "app_icon.png",
+            "lucide-chevron-down.svg",
+            "lucide-chevron-up.svg",
+            "lucide-chevron-down-disabled.svg",
+            "lucide-chevron-up-disabled.svg",
+            "LUCIDE-LICENSE.txt",
+        )
+        for filename in filenames:
             path = assets / filename
             self.assertTrue(path.exists(), filename)
             self.assertGreater(path.stat().st_size, 0, filename)
+
+        from PySide6.QtGui import QImage
+
+        for filename in filenames[2:6]:
+            self.assertFalse(QImage(str(assets / filename)).isNull(), filename)
+
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        package_data = pyproject.read_text(encoding="utf-8")
+        self.assertIn('"assets/*.svg"', package_data)
+        self.assertIn('"assets/*.txt"', package_data)
 
     def test_package_version_matches_pyproject(self) -> None:
         pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
@@ -377,6 +396,14 @@ class BrandingAssetTests(unittest.TestCase):
         (root / "photo_dedupe" / "ui" / "main_window.py").write_text("", encoding="utf-8")
         (root / "photo_dedupe" / "assets" / "app_icon.ico").write_bytes(b"icon")
         (root / "photo_dedupe" / "assets" / "app_icon.png").write_bytes(b"png")
+        for filename in (
+            "lucide-chevron-down.svg",
+            "lucide-chevron-up.svg",
+            "lucide-chevron-down-disabled.svg",
+            "lucide-chevron-up-disabled.svg",
+            "LUCIDE-LICENSE.txt",
+        ):
+            (root / "photo_dedupe" / "assets" / filename).write_text("asset", encoding="ascii")
         (root / "dist" / "PhotoManageGPT" / "PhotoManageGPT.exe").write_bytes(b"exe")
         (release_dir / "PhotoManageGPT.exe").write_bytes(b"exe")
         (release_dir / "README.md").write_text("readme", encoding="utf-8")
@@ -839,9 +866,11 @@ class MainWindowStartupTests(unittest.TestCase):
         from PySide6.QtGui import QFontDatabase
         from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
         from photo_dedupe.ui.main_window import (
+            ComboBoxItemDelegate,
             NAVIGATION_COLLAPSED_WIDTH,
             NAVIGATION_EXPANDED_WIDTH,
             MainWindow,
+            app_asset_path,
         )
 
         app = QApplication.instance() or QApplication([])
@@ -880,6 +909,14 @@ class MainWindowStartupTests(unittest.TestCase):
                     ["添加文件夹"],
                 )
                 self.assertTrue(all(not button.icon().isNull() for button in window.navigation_buttons.values()))
+                self.assertNotIn("__CHEVRON_", window.styleSheet())
+                for filename in (
+                    "lucide-chevron-down.svg",
+                    "lucide-chevron-up.svg",
+                    "lucide-chevron-down-disabled.svg",
+                    "lucide-chevron-up-disabled.svg",
+                ):
+                    self.assertIn(app_asset_path(filename).resolve().as_posix(), window.styleSheet())
                 self.assertLessEqual(
                     window.navigation_brand_label.fontMetrics().horizontalAdvance(window.navigation_brand_label.text()),
                     window.navigation_brand_label.width(),
@@ -954,6 +991,13 @@ class MainWindowStartupTests(unittest.TestCase):
                 self.assertEqual(window.main_tabs.currentIndex(), window.page_index_by_key["duplicates"])
                 self.assertGreater(window.file_table.height(), 80)
                 self.assertGreater(window.preview_stack.height(), 100)
+                self.assertEqual(window.group_min_size_unit_combo.width(), 72)
+                self.assertEqual(window.group_max_size_unit_combo.width(), 72)
+                self.assertIsInstance(window.group_type_filter_combo.itemDelegate(), ComboBoxItemDelegate)
+                window.group_type_filter_combo.showPopup()
+                app.processEvents()
+                self.assertEqual(window.group_type_filter_combo.view().verticalScrollBar().maximum(), 0)
+                window.group_type_filter_combo.hidePopup()
                 for object_name in ("SidebarScroll", "DuplicateControlsScroll"):
                     scroll_area = window.findChild(QScrollArea, object_name)
                     self.assertIsNotNone(scroll_area)
@@ -1136,8 +1180,8 @@ class MainWindowStartupTests(unittest.TestCase):
                 app.processEvents()
                 self.assertEqual(window.duplicate_content_splitter.count(), 2)
                 self.assertEqual(window.duplicate_review_splitter.count(), 2)
-                self.assertEqual(window.group_min_size_unit_combo.width(), 64)
-                self.assertEqual(window.group_max_size_unit_combo.width(), 64)
+                self.assertEqual(window.group_min_size_unit_combo.width(), 72)
+                self.assertEqual(window.group_max_size_unit_combo.width(), 72)
                 self.assertEqual(window.width(), 1100)
                 self.assertEqual(window.height(), 720)
                 self.assertGreater(window.file_table.height(), 80)
