@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+from pathlib import Path
+
+build_info = os.environ.get("PHOTO_MANAGE_BUILD_INFO")
+if not build_info or not Path(build_info).is_file():
+    raise RuntimeError("Use build.ps1 to supply immutable build-info.json metadata.")
 
 a = Analysis(
     ['photo_dedupe\\__main__.py'],
     pathex=[],
     binaries=[],
-    datas=[('photo_dedupe\\assets', 'photo_dedupe\\assets')],
+    datas=[('photo_dedupe\\assets', 'photo_dedupe\\assets'), (build_info, '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from photo_dedupe.core.build_info import get_build_info
+
 
 APP_DATA_DIR_NAME = "PhotoManageGPT"
 LOG_FILE_NAME = "app.log"
@@ -149,6 +151,7 @@ def build_health_items(
         items.insert(2, DiagnosticItem("处理报告目录", report_status, report_detail))
     if app_version:
         items.insert(0, DiagnosticItem("应用版本", "正常", app_version))
+        items.insert(1, DiagnosticItem("构建标识", "正常", get_build_info(app_version).label))
     return items
 
 
@@ -201,6 +204,7 @@ def build_support_diagnostic_report(
         "",
         "应用",
         f"- 版本：{app_version}",
+        f"- 构建：{get_build_info(app_version).label}",
         f"- 安全模式：{'是' if safe_mode else '否'}",
         f"- 打包运行：{'是' if resolved_frozen else '否'}",
         f"- 进程 PID：{resolved_pid}",

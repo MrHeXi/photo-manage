@@ -1,72 +1,87 @@
+param([switch]$SkipInstall, [switch]$SkipBuild)
+
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-$python = ".\.venv\Scripts\python.exe"
-if (-not (Test-Path $python)) {
-    $python = "py"
+function Invoke-PackageNative {
+    param([string]$Program, [string[]]$Arguments)
+    & $Program @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Program failed with exit code $LASTEXITCODE." }
 }
 
-$version = (& $python -c "import photo_dedupe; print(photo_dedupe.__version__)").Trim()
-$releaseDir = Join-Path "release" "PhotoManageGPT-v$version-win64"
-$zipPath = "$releaseDir.zip"
-
-function Remove-PathWithRetry {
+function Assert-PackagePath {
     param([string]$Path)
-
-    if (-not (Test-Path $Path)) {
-        return
+    $resolved = [System.IO.Path]::GetFullPath($Path)
+    $workspacePrefix = [System.IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Package target is outside the workspace: $resolved"
     }
-
-    for ($attempt = 1; $attempt -le 5; $attempt++) {
-        try {
-            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-            return
-        } catch {
-            if ($attempt -eq 5) {
-                throw "无法清理旧发布产物 $Path，可能正在被资源管理器、杀毒软件或压缩工具占用。请关闭相关窗口后重试。原始错误：$($_.Exception.Message)"
-            }
-            Start-Sleep -Milliseconds 800
-        }
-    }
+    return $resolved
 }
 
-Remove-PathWithRetry $releaseDir
-Remove-PathWithRetry $zipPath
-Remove-PathWithRetry "$zipPath.sha256"
+Push-Location $PSScriptRoot
+try {
+    if (-not $SkipBuild) { & (Join-Path $PSScriptRoot "build.ps1") -SkipInstall:$SkipInstall }
+    $python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+    $distDir = Join-Path $PSScriptRoot "dist\PhotoManageGPT"
+    $metadata = Get-Content -LiteralPath (Join-Path $distDir "build-info.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    $commitOutput = & git rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) { throw "Cannot resolve current Git commit." }
+    if ($metadata.commit -ne (($commitOutput | Out-String).Trim())) {
+        throw "The existing build belongs to another commit. Rebuild before packaging."
+    }
+    $dirtyOutput = & git diff --name-only HEAD
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect current worktree." }
+    if ($dirtyOutput) { throw "Commit tracked changes before packaging a traceable release." }
+    $untrackedSource = & git ls-files --others --exclude-standard -- photo_dedupe
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect untracked source files." }
+    if ($untrackedSource) { throw "Commit new application source files before packaging a traceable release." }
+    $packageName = "PhotoManageGPT-$($metadata.build_id)-win64"
+    if ($packageName -notmatch '^[A-Za-z0-9_.-]+$') { throw "Invalid build identity for a package filename." }
+    $releaseDir = Assert-PackagePath (Join-Path $PSScriptRoot "release\$packageName")
+    $zipPath = "$releaseDir.zip"
+    if ((Test-Path -LiteralPath $releaseDir) -or (Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath "$zipPath.sha256")) {
+        throw "This build already has a package. Existing package was retained; rebuild to create a new identity."
+    }
+    $stageRoot = Assert-PackagePath (Join-Path $PSScriptRoot ("release\.staging\" + [Guid]::NewGuid().ToString("N")))
+    $stageDir = Assert-PackagePath (Join-Path $stageRoot $packageName)
+    New-Item -ItemType Directory -Path $stageDir | Out-Null
+    Copy-Item -Path (Join-Path $distDir "*") -Destination $stageDir -Recurse
+    foreach ($document in @("README.md", "CHANGELOG.md", "QUICKSTART.md", "install-shortcut.ps1", "remove-shortcut.ps1")) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $document) -Destination (Join-Path $stageDir $document)
+    }
+    $safeModeLauncher = "@echo off`r`nstart `"`" `"%~dp0PhotoManageGPT.exe`" --safe-mode`r`n"
+    Set-Content -LiteralPath (Join-Path $stageDir "PhotoManageGPT-safe-mode.cmd") -Value $safeModeLauncher -Encoding ASCII
 
-.\build.ps1
+    $smoke = Start-Process -FilePath (Join-Path $stageDir "PhotoManageGPT.exe") -ArgumentList "--startup-smoke-test" -WindowStyle Hidden -Wait -PassThru
+    if ($smoke.ExitCode -ne 0) { throw "Release startup smoke test failed with exit code $($smoke.ExitCode). Previous packages were retained." }
+    Invoke-PackageNative $python @("-m", "photo_dedupe", "--write-release-manifest", $stageDir)
+    Invoke-PackageNative $python @("-m", "photo_dedupe.core.release_check", "--release-check", "--release-dir", $stageDir, "--require-build-info")
 
-New-Item -ItemType Directory -Path $releaseDir | Out-Null
-Copy-Item -Path "dist\PhotoManageGPT\*" -Destination $releaseDir -Recurse
-Copy-Item -Path "README.md" -Destination (Join-Path $releaseDir "README.md")
-Copy-Item -Path "CHANGELOG.md" -Destination (Join-Path $releaseDir "CHANGELOG.md")
-Copy-Item -Path "QUICKSTART.md" -Destination (Join-Path $releaseDir "QUICKSTART.md")
-Copy-Item -Path "install-shortcut.ps1" -Destination (Join-Path $releaseDir "install-shortcut.ps1")
-Copy-Item -Path "remove-shortcut.ps1" -Destination (Join-Path $releaseDir "remove-shortcut.ps1")
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $stageZip = Join-Path $stageRoot "$packageName.zip"
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $stageDir, $stageZip, [System.IO.Compression.CompressionLevel]::Optimal, $false
+    )
+    $zipHash = (Get-FileHash -LiteralPath $stageZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath "$stageZip.sha256" -Value "$zipHash  $packageName.zip" -Encoding ASCII
+    Invoke-PackageNative $python @("-m", "photo_dedupe.core.release_check", "--release-check", "--release-dir", $stageDir, "--zip-path", $stageZip, "--require-build-info")
 
-$safeModeLauncher = @"
-@echo off
-start "" "%~dp0PhotoManageGPT.exe" --safe-mode
-"@
-Set-Content -Path (Join-Path $releaseDir "PhotoManageGPT-safe-mode.cmd") -Value $safeModeLauncher -Encoding ASCII
-
-$smokeExe = Join-Path $releaseDir "PhotoManageGPT.exe"
-& $smokeExe --startup-smoke-test
-
-& $python -m photo_dedupe --write-release-manifest $releaseDir
-
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zipFullPath = Join-Path (Resolve-Path ".") $zipPath
-$releaseFullPath = (Resolve-Path $releaseDir).Path
-[System.IO.Compression.ZipFile]::CreateFromDirectory(
-    $releaseFullPath,
-    $zipFullPath,
-    [System.IO.Compression.CompressionLevel]::Optimal,
-    $false
-)
-
-$zipHash = (Get-FileHash -Path $zipFullPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$zipFileName = Split-Path -Leaf $zipPath
-Set-Content -Path "$zipPath.sha256" -Value "$zipHash  $zipFileName" -Encoding ASCII
-
-& $python -m photo_dedupe --release-check
-Write-Host "Release package: $zipPath"
+    # Promotion occurs only after the directory, startup, archive and checksum pass.
+    try {
+        Move-Item -LiteralPath $stageDir -Destination $releaseDir
+        Move-Item -LiteralPath $stageZip -Destination $zipPath
+        Move-Item -LiteralPath "$stageZip.sha256" -Destination "$zipPath.sha256"
+    } catch {
+        # Return this attempt's files to staging; earlier published versions are untouched.
+        if (Test-Path -LiteralPath $releaseDir) { Move-Item -LiteralPath $releaseDir -Destination $stageDir }
+        if (Test-Path -LiteralPath $zipPath) { Move-Item -LiteralPath $zipPath -Destination $stageZip }
+        if (Test-Path -LiteralPath "$zipPath.sha256") { Move-Item -LiteralPath "$zipPath.sha256" -Destination "$stageZip.sha256" }
+        throw
+    }
+    Write-Host "Verified release: $releaseDir\PhotoManageGPT.exe"
+    Write-Host "Release package: $zipPath"
+    Write-Host "SHA-256: $zipHash"
+} finally {
+    Pop-Location
+}
