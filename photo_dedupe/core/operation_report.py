@@ -4,10 +4,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TYPE_CHECKING
 
 from photo_dedupe.core.organizer import OrganizePreviewItem, OrganizePreviewSummary, summarize_organize_preview
 from photo_dedupe.core.selection import ProcessingPlan, normalize_path
+
+if TYPE_CHECKING:
+    from photo_dedupe.core.batch_operations import BatchResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +37,53 @@ class OperationResultReport:
     restore_hint: str
     notes: tuple[str, ...]
     items: tuple[OperationResultItem, ...]
+
+    @property
+    def failed_count(self) -> int:
+        return sum(item.status == "failed" for item in self.items)
+
+    @property
+    def cancelled_count(self) -> int:
+        return sum(item.status == "cancelled" for item in self.items)
+
+
+def build_batch_result_report(
+    result: BatchResult,
+    action_label: str,
+    *,
+    title: str = "重复文件处理报告",
+    protected_skip_count: int = 0,
+) -> OperationResultReport:
+    """Build a report from actual outcomes, without relabelling errors as skips."""
+    items = tuple(
+        OperationResultItem(item.source_path, item.target_path, item.status, item.size, item.message)
+        for item in result.items
+    )
+    notes = [
+        f"恢复日志：{result.journal_path}",
+        "已完成文件不会在重试中重复处理；失败和取消的文件可以重试。",
+        "操作记录写入异常会保留在逐文件明细中，请按恢复日志核对实际路径。",
+    ]
+    if protected_skip_count:
+        notes.append(f"{protected_skip_count} 个保护目录内文件没有被移动或回收。")
+    return OperationResultReport(
+        title=title,
+        action_label=action_label,
+        planned_count=len(items),
+        completed_count=result.completed_count,
+        skipped_count=result.skipped_count,
+        planned_bytes=sum(item.size for item in items),
+        completed_bytes=sum(item.size for item in items if item.status == "completed"),
+        protected_skip_count=protected_skip_count,
+        affected_directories=_sorted_unique_paths(item.source_path.parent for item in items),
+        target_directories=_sorted_unique_paths(
+            item.target_path.parent for item in items
+            if item.status == "completed" and item.target_path is not None
+        ),
+        restore_hint=_restore_hint(_is_trash_action(action_label)),
+        notes=tuple(notes),
+        items=items,
+    )
 
 
 def build_processing_result_report(
@@ -186,6 +236,8 @@ def format_operation_result_report(
             f"计划处理：{report.planned_count} 个文件，{_format_size(report.planned_bytes)}",
             f"实际完成：{report.completed_count} 个文件，{_format_size(report.completed_bytes)}",
             f"执行时跳过：{report.skipped_count} 个文件",
+            f"执行失败：{report.failed_count} 个文件",
+            f"取消未执行：{report.cancelled_count} 个文件",
             f"保护目录跳过：{report.protected_skip_count} 个文件",
             "",
             "恢复方式：",
@@ -288,6 +340,8 @@ def _item_status_label(status: str) -> str:
     return {
         "completed": "已完成",
         "skipped": "已跳过",
+        "failed": "失败",
+        "cancelled": "已取消",
     }.get(status, status)
 
 

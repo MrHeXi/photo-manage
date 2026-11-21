@@ -26,6 +26,7 @@ class ProcessingPlan:
     reclaimable_bytes: int
     affected_directories: list[Path]
     invalid_groups: list[DuplicateGroup]
+    protected_roots: frozenset[Path] = frozenset()
 
 
 def normalize_path(path: Path) -> Path:
@@ -171,25 +172,34 @@ def describe_keep_reasons(
     return reasons
 
 
-def build_processing_plan(groups: list[DuplicateGroup], protected_roots: set[Path]) -> ProcessingPlan:
+def build_processing_plan(
+    groups: list[DuplicateGroup], protected_roots: set[Path], *, validate_files: bool = False,
+) -> ProcessingPlan:
     records_to_process: list[FileRecord] = []
     keep_count = 0
     protected_skip_count = 0
     invalid_groups: list[DuplicateGroup] = []
+    all_keep_paths = {
+        normalize_path(record.path)
+        for group in groups for record in group.records if record.keep_selected
+    }
+    seen: set[Path] = set()
 
     for group in groups:
         keep_records = [record for record in group.records if record.keep_selected]
-        if not keep_records:
+        if not keep_records or (validate_files and not any(_matches_snapshot(record) for record in keep_records)):
             invalid_groups.append(group)
             continue
         keep_count += len(keep_records)
         for record in group.records:
-            if record.keep_selected:
+            path = normalize_path(record.path)
+            if record.keep_selected or path in all_keep_paths or path in seen:
                 continue
             if is_under_any(record.path, protected_roots):
                 protected_skip_count += 1
                 continue
             records_to_process.append(record)
+            seen.add(path)
 
     affected_directories = sorted({record.path.parent for record in records_to_process}, key=lambda item: str(item).lower())
     reclaimable_bytes = sum(record.size for record in records_to_process)
@@ -201,4 +211,16 @@ def build_processing_plan(groups: list[DuplicateGroup], protected_roots: set[Pat
         reclaimable_bytes=reclaimable_bytes,
         affected_directories=affected_directories,
         invalid_groups=invalid_groups,
+        protected_roots=frozenset(normalize_path(path) for path in protected_roots),
     )
+
+
+def _matches_snapshot(record: FileRecord) -> bool:
+    try:
+        stat = record.path.stat()
+        return (
+            not record.path.is_symlink() and record.path.is_file()
+            and stat.st_size == record.size and stat.st_mtime == record.modified_at
+        )
+    except OSError:
+        return False

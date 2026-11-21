@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Iterator
 
 from photo_dedupe.core.file_ops import unique_target_path
 from photo_dedupe.core.hashers import is_image
@@ -74,6 +76,8 @@ class OrganizePreviewItem:
     category: str
     reason: str
     target: Path
+    size: int | None = None
+    modified_at: float | None = None
 
 
 @dataclass(slots=True)
@@ -106,22 +110,54 @@ def category_label(category: str) -> str:
     return labels.get(category, category)
 
 
-def collect_files(source_root: Path, exclude_roots: set[Path] | None = None) -> list[Path]:
+class PreviewCancelled(Exception):
+    """The preview was cancelled and must not replace the previous preview."""
+
+
+def _iter_files(
+    source_root: Path,
+    exclude_roots: set[Path] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> Iterator[Path]:
     if not source_root.exists():
-        return []
+        return
     excluded = {normalize_path(root) for root in (exclude_roots or set())}
 
     def excluded_path(path: Path) -> bool:
         normalized = normalize_path(path)
         return any(normalized == root or root in normalized.parents for root in excluded)
 
+    def check_cancel() -> None:
+        if should_cancel and should_cancel():
+            raise PreviewCancelled("整理预览已取消")
+
+    check_cancel()
+    if excluded_path(source_root) or source_root.is_symlink():
+        return
     if source_root.is_file():
-        return [] if excluded_path(source_root) else [source_root]
-    return [
-        path
-        for path in source_root.rglob("*")
-        if path.is_file() and not excluded_path(path)
-    ]
+        yield source_root
+        return
+    pending = [source_root]
+    while pending:
+        check_cancel()
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    check_cancel()
+                    path = Path(entry.path)
+                    if entry.is_symlink() or excluded_path(path):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                    elif entry.is_file(follow_symlinks=False):
+                        yield path
+        except OSError:
+            continue
+
+
+def collect_files(source_root: Path, exclude_roots: set[Path] | None = None) -> list[Path]:
+    return list(_iter_files(source_root, exclude_roots))
 
 
 def image_taken_at(path: Path) -> datetime | None:
@@ -236,12 +272,19 @@ def build_target_path(
 ) -> OrganizePreviewItem:
     category, reason = classify_file(source)
     target_root = target_root_for_category(targets, category)
+    try:
+        stat = source.stat()
+        size, modified_at = stat.st_size, stat.st_mtime
+    except OSError:
+        size, modified_at = None, None
     if rule == "category":
         return OrganizePreviewItem(
             source=source,
             category=category,
             reason=reason,
             target=target_root / source.name,
+            size=size,
+            modified_at=modified_at,
         )
     target_dir, rule_reason = target_directory_for_rule(source, target_root, category, rule)
     return OrganizePreviewItem(
@@ -249,6 +292,8 @@ def build_target_path(
         category=category,
         reason=f"{reason}；{rule_reason}",
         target=target_dir / source.name,
+        size=size,
+        modified_at=modified_at,
     )
 
 
@@ -258,17 +303,31 @@ def build_organize_preview(
     include_paths: set[Path] | None = None,
     exclude_roots: set[Path] | None = None,
     rule: str = "category",
+    *,
+    progress: Callable[[str, int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[OrganizePreviewItem]:
     preview: list[OrganizePreviewItem] = []
     seen: set[Path] = set()
-    for root in roots:
-        for source in collect_files(root, exclude_roots=exclude_roots):
-            if include_paths is not None and source not in include_paths:
+    included = {normalize_path(path) for path in include_paths} if include_paths is not None else None
+    normalized_roots = sorted({normalize_path(root) for root in roots}, key=lambda path: (len(path.parts), str(path)))
+    traversal_roots: list[Path] = []
+    for root in normalized_roots:
+        if not any(parent == root or parent in root.parents for parent in traversal_roots):
+            traversal_roots.append(root)
+    for root in traversal_roots:
+        for source in _iter_files(root, exclude_roots=exclude_roots, should_cancel=should_cancel):
+            normalized = normalize_path(source)
+            if included is not None and normalized not in included:
                 continue
-            if source in seen:
+            if normalized in seen:
                 continue
-            seen.add(source)
+            seen.add(normalized)
+            if progress:
+                progress(f"正在生成整理预览：{source.name}", len(preview), 0)
             preview.append(build_target_path(source, targets, rule=rule))
+    if should_cancel and should_cancel():
+        raise PreviewCancelled("整理预览已取消")
     preview.sort(key=lambda item: (item.category, str(item.source).lower()))
     return preview
 
@@ -306,9 +365,15 @@ def summarize_organize_preview(preview: list[OrganizePreviewItem]) -> OrganizePr
 
 def describe_organize_preview_item(item: OrganizePreviewItem) -> OrganizePreviewItemStatus:
     try:
-        if not item.source.exists():
+        if not item.source.is_file() or item.source.is_symlink():
             return OrganizePreviewItemStatus(0, "missing", "源文件不存在", False)
-        size = item.source.stat().st_size
+        stat = item.source.stat()
+        size = stat.st_size
+        if (
+            item.size is not None and item.size != size
+            or item.modified_at is not None and item.modified_at != stat.st_mtime
+        ):
+            return OrganizePreviewItemStatus(size, "changed", "文件已变化，请重新预览", False)
         if item.source.resolve() == item.target.resolve():
             return OrganizePreviewItemStatus(size, "already_in_target", "已在目标位置", False)
         if item.target.exists():
