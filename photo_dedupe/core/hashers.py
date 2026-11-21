@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Callable
 
 
 IMAGE_EXTENSIONS = {
@@ -27,10 +28,18 @@ VIDEO_EXTENSIONS = {
 }
 
 
-def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+def sha256_file(
+    path: Path, chunk_size: int = 1024 * 1024, *,
+    check_cancel: Callable[[], None] | None = None,
+) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
-        while chunk := file.read(chunk_size):
+        while True:
+            if check_cancel:
+                check_cancel()
+            chunk = file.read(chunk_size)
+            if not chunk:
+                break
             digest.update(chunk)
     return digest.hexdigest()
 

@@ -31,11 +31,14 @@ class DuplicateGroup:
     title: str
     records: list[FileRecord]
     score: float = 1.0
+    storage_id: int | None = None
 
     @property
     def reclaimable_bytes(self) -> int:
         if len(self.records) <= 1:
             return 0
+        if any(item.keep_selected for item in self.records):
+            return sum(item.size for item in self.records if not item.keep_selected)
         best = max(self.records, key=lambda item: (item.size, item.modified_at))
         return sum(item.size for item in self.records if item.path != best.path)
 
