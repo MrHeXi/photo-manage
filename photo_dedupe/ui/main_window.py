@@ -4,11 +4,13 @@ import os
 import logging
 import sys
 import tempfile
+from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QSize, QThread, Qt, QTimer, Signal, QUrl
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImageReader, QPainter, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -53,6 +55,8 @@ from PySide6.QtWidgets import (
 )
 
 from photo_dedupe import __version__
+from photo_dedupe.core.build_info import get_build_info
+from photo_dedupe.core.batch_operations import process_duplicates, process_organize
 from photo_dedupe.core.ai_client import AiConfig, analyze_image, format_ai_config_validation, validate_ai_config
 from photo_dedupe.core.diagnostics import (
     build_health_items,
@@ -65,7 +69,7 @@ from photo_dedupe.core.demo_workspace import create_demo_workspace as create_dem
 from photo_dedupe.core.directory_index import FileDuplicateLink, build_directory_duplicate_index
 from photo_dedupe.core.exporter import export_ai_analysis_csv, export_duplicate_report_html, export_files_csv, export_operations_csv, export_scan_sessions_csv
 from photo_dedupe.core.file_details import FilePreviewDetails, inspect_file_preview
-from photo_dedupe.core.file_ops import move_records, trash_records, undo_move, undo_move_operations
+from photo_dedupe.core.file_ops import undo_move_operations
 from photo_dedupe.core.file_reveal import operation_reveal_path, reveal_in_file_manager
 from photo_dedupe.core.group_summary import DuplicateGroupSummary, summarize_duplicate_group
 from photo_dedupe.core.hashers import is_image, is_video
@@ -75,11 +79,11 @@ from photo_dedupe.core.organizer import (
     OrganizePreviewItem,
     OrganizePreviewSummary,
     OrganizeTargetConfig,
+    PreviewCancelled,
     build_organize_preview,
     category_label,
     classify_group_category,
     describe_organize_preview_item,
-    execute_organize_preview,
     summarize_organize_preview,
 )
 from photo_dedupe.core.organize_profiles import (
@@ -104,8 +108,7 @@ from photo_dedupe.core.onboarding import (
     onboarding_summary,
 )
 from photo_dedupe.core.operation_report import (
-    build_organize_result_report,
-    build_processing_result_report,
+    build_batch_result_report,
     format_operation_result_report,
     save_operation_result_report,
 )
@@ -127,7 +130,7 @@ from photo_dedupe.core.progress_status import (
     format_scan_start,
 )
 from photo_dedupe.core.processing_risk import available_destination_free_bytes, build_processing_risk_summary, format_processing_confirmation
-from photo_dedupe.core.scanner import DuplicateScanner
+from photo_dedupe.core.scanner import DuplicateScanner, ScanCancelled
 from photo_dedupe.core.selection import (
     build_processing_plan,
     choose_keep_records,
@@ -143,7 +146,7 @@ from photo_dedupe.core.video_hash import video_hash_available
 
 APP_NAME = "Photo Manage GPT"
 APP_VERSION = __version__
-APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
+APP_TITLE = f"{APP_NAME} · {get_build_info(APP_VERSION).label}"
 APP_USER_MODEL_ID = "PhotoManageGPT.PhotoManageGPT.1"
 NAVIGATION_EXPANDED_WIDTH = 224
 NAVIGATION_COLLAPSED_WIDTH = 64
@@ -158,9 +161,8 @@ PAGE_DEFINITIONS = (
     ("health", "健康诊断"),
 )
 EMPTY_SCAN_GUIDANCE = (
-    "暂无重复分组。\n"
-    "第一次使用：可在“新手向导”点击“创建演示样例”先练习，或点击“添加文件夹”添加扫描目录。\n"
-    "处理真实资料前，建议先把主相册、主资料库或工作目录设为保护目录。"
+    "添加扫描目录，然后开始扫描。\n"
+    "可在新手向导创建演示样例；主资料库建议设为保护目录。"
 )
 SUPPORT_DOCUMENTS = {
     "quickstart": "QUICKSTART.md",
@@ -179,6 +181,17 @@ def load_app_icon() -> QIcon:
         if path.exists():
             return QIcon(str(path))
     return QIcon()
+
+
+def scaled_image_preview(path: Path, width: int, height: int) -> QPixmap:
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if size.isValid():
+        reader.setScaledSize(size.scaled(max(width, 1), max(height, 1), Qt.AspectRatioMode.KeepAspectRatio))
+    pixmap = QPixmap.fromImage(reader.read())
+    return pixmap.scaled(max(width, 1), max(height, 1), Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
 
 
 def monochrome_icon(icon: QIcon, size: QSize = QSize(18, 18)) -> QIcon:
@@ -270,6 +283,7 @@ class ScanWorker(QThread):
     progress_changed = Signal(str, int, int)
     finished_groups = Signal(object)
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(
         self,
@@ -294,8 +308,9 @@ class ScanWorker(QThread):
         return self._cancel_requested
 
     def run(self) -> None:
-        database = AppDatabase(self.database_path)
+        database = None
         try:
+            database = AppDatabase(self.database_path)
             scanner = DuplicateScanner(database)
             groups = scanner.scan(
                 self.roots,
@@ -306,11 +321,14 @@ class ScanWorker(QThread):
                 should_cancel=self.should_cancel,
             )
             self.finished_groups.emit(groups)
+        except ScanCancelled:
+            self.cancelled.emit()
         except Exception as exc:
             logging.getLogger(__name__).exception("Scan worker failed")
             self.failed.emit(str(exc))
         finally:
-            database.close()
+            if database:
+                database.close()
 
 
 class AiWorker(QThread):
@@ -357,8 +375,9 @@ class RestoreSessionWorker(QThread):
         self.limit_groups = limit_groups
 
     def run(self) -> None:
-        database = AppDatabase(self.database_path)
+        database = None
         try:
+            database = AppDatabase(self.database_path)
             session = database.get_latest_scan_session() if self.session_id is None else database.get_scan_session(self.session_id)
             if session is None:
                 self.finished_restore.emit(
@@ -371,7 +390,6 @@ class RestoreSessionWorker(QThread):
                 session.id,
                 limit_groups=self.limit_groups,
                 offset_groups=self.offset_groups,
-                limit_items_per_group=200,
             )
             self.finished_restore.emit(
                 session,
@@ -386,7 +404,34 @@ class RestoreSessionWorker(QThread):
             logging.getLogger(__name__).exception("Restore session worker failed")
             self.failed.emit(str(exc))
         finally:
-            database.close()
+            if database:
+                database.close()
+
+
+class BackgroundTaskWorker(QThread):
+    progress_changed = Signal(str, int, int)
+
+    def __init__(self, database_path: Path, task) -> None:
+        super().__init__()
+        self.database_path = database_path
+        self.task = task
+        self.result = None
+        self.error: str | None = None
+        self.cancelled = False
+
+    def run(self) -> None:
+        database = None
+        try:
+            database = AppDatabase(self.database_path)
+            self.result = self.task(database, self.progress_changed.emit, self.isInterruptionRequested)
+        except PreviewCancelled:
+            self.cancelled = True
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Background task failed")
+            self.error = str(exc)
+        finally:
+            if database:
+                database.close()
 
 
 class MainWindow(QMainWindow):
@@ -404,6 +449,13 @@ class MainWindow(QMainWindow):
         self.worker: ScanWorker | None = None
         self.ai_worker: AiWorker | None = None
         self.restore_worker: RestoreSessionWorker | None = None
+        self.background_worker: BackgroundTaskWorker | None = None
+        self.scan_completed = False
+        self.pending_scan_roots: list[Path] | None = None
+        self._close_pending = False
+        self._pending_results: set[QThread] = set()
+        self._retry_batch = None
+        self._retry_signature = None
         self.operations_loaded = False
         self.history_loaded = False
         self.ai_loaded = False
@@ -452,11 +504,17 @@ class MainWindow(QMainWindow):
         self.group_max_size_input = QLineEdit()
         self.group_max_size_unit_combo = QComboBox()
         self.load_more_groups_button = QPushButton("继续加载更多")
+        self.load_more_groups_button.setVisible(False)
         self.group_stack = QStackedWidget()
         self.directory_tree = QTreeWidget()
         self.directory_detail_table = QTableWidget(0, 4)
         self.directory_hint_label = QLabel("")
         self.thumbnail_list = QListWidget()
+        self.thumbnail_more_button = QPushButton("更多缩略图")
+        self.thumbnail_more_button.setVisible(False)
+        self.thumbnail_more_button.clicked.connect(self._load_more_thumbnails)
+        self._thumbnail_queue = []
+        self._thumbnail_offset = 0
         self.file_table = QTableWidget(0, 9)
         self.operations_table = QTableWidget(0, 6)
         self.operation_action_filter_combo = QComboBox()
@@ -467,6 +525,10 @@ class MainWindow(QMainWindow):
         self.ai_table = QTableWidget(0, 5)
         self.health_table = QTableWidget(0, 3)
         self.organize_preview_table = QTableWidget(0, 6)
+        self.organize_more_button = QPushButton("继续显示预览")
+        self.organize_more_button.setVisible(False)
+        self.organize_more_button.clicked.connect(self._load_more_organize_rows)
+        self._organize_preview_statuses = []
         self.onboarding_table = QTableWidget(0, 4)
         self.action_combo = QComboBox()
         self.bulk_keep_rule_combo = QComboBox()
@@ -527,6 +589,12 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setFixedWidth(190)
         self.progress.setVisible(False)
+        self.task_cancel_button = QPushButton("取消任务")
+        self.task_cancel_button.setVisible(False)
+        self.task_cancel_button.clicked.connect(self.cancel_active_task)
+        self.retry_batch_button = QPushButton("重试未完成项")
+        self.retry_batch_button.setVisible(False)
+        self.retry_batch_button.clicked.connect(self.retry_failed_batch)
         self.media_player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.health_log_path = default_log_path()
@@ -570,6 +638,11 @@ class MainWindow(QMainWindow):
             combo.setItemDelegate(ComboBoxItemDelegate(combo))
 
     def _show_task_progress(self, maximum: int, value: int = 0) -> None:
+        if maximum <= 0:
+            self.progress.setRange(0, 0)
+            self.progress.setVisible(True)
+            return
+        self.progress.setMinimum(0)
         safe_maximum = max(maximum, 1)
         self.progress.setMaximum(safe_maximum)
         self.progress.setValue(min(max(value, 0), safe_maximum))
@@ -578,8 +651,64 @@ class MainWindow(QMainWindow):
     def _hide_task_progress(self) -> None:
         self.progress.setVisible(False)
 
+    def _active_threads(self) -> list[QThread]:
+        return [worker for worker in (self.worker, self.ai_worker, self.restore_worker, self.background_worker)
+                if worker is not None and worker.isRunning()]
+
+    def _set_task_busy(self, busy: bool, cancellable: bool = True) -> None:
+        self.main_tabs.setEnabled(not busy)
+        self.navigation_rail.setEnabled(not busy)
+        self.menuBar().setEnabled(not busy)
+        self.task_cancel_button.setVisible(busy and cancellable)
+        self.task_cancel_button.setEnabled(True)
+        self.retry_batch_button.setEnabled(not busy)
+
+    def cancel_active_task(self) -> None:
+        if self.background_worker and self.background_worker.isRunning():
+            self.background_worker.requestInterruption()
+            self.task_cancel_button.setEnabled(False)
+            self.status_label.setText("正在取消，当前文件完成后停止；已完成结果会保留")
+        else:
+            self.cancel_scan()
+
+    def _start_background_task(self, task, completed, label: str) -> bool:
+        if self._active_threads() or self._pending_results:
+            self.status_label.setText("请先等待当前任务完成")
+            return False
+        self._set_task_busy(True)
+        self._show_task_progress(1, 0)
+        self.status_label.setText(label)
+        worker = BackgroundTaskWorker(self.database.path, task)
+        self.background_worker = worker
+        self._pending_results.add(worker)
+        worker.progress_changed.connect(self.on_progress)
+        worker.finished.connect(lambda: self._finish_background_task(worker, completed))
+        worker.start()
+        return True
+
+    def _finish_background_task(self, worker, completed) -> None:
+        try:
+            self._hide_task_progress()
+            if worker.cancelled:
+                self.status_label.setText("任务已取消，之前的结果已保留")
+            elif worker.error:
+                self.status_label.setText(f"任务失败：{worker.error}")
+                if not self._close_pending:
+                    QMessageBox.critical(self, "任务未完成", worker.error)
+            else:
+                completed(worker.result)
+        finally:
+            self._pending_results.discard(worker)
+            self._set_task_busy(False)
+
+    def _finish_pending_close(self) -> None:
+        if self._active_threads() or self._pending_results:
+            QTimer.singleShot(100, self._finish_pending_close)
+        else:
+            self.close()
+
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        close_reasons = self._close_warning_reasons()
+        close_reasons = [] if self._close_pending else self._close_warning_reasons()
         if close_reasons:
             message = "当前还有未完成或未执行的内容：\n\n"
             message += "\n".join(f"- {reason}" for reason in close_reasons)
@@ -590,20 +719,26 @@ class MainWindow(QMainWindow):
                 return
 
         self.media_player.stop()
-        if self.worker and self.worker.isRunning():
-            self.worker.request_cancel()
-            self.worker.wait(3000)
-        if self.ai_worker and self.ai_worker.isRunning():
-            self.ai_worker.requestInterruption()
-            self.ai_worker.wait(3000)
-        if self.restore_worker and self.restore_worker.isRunning():
-            self.restore_worker.wait(3000)
+        if self._active_threads() or self._pending_results:
+            self._close_pending = True
+            if self.worker and self.worker.isRunning():
+                self.worker.request_cancel()
+            for thread in self._active_threads():
+                thread.requestInterruption()
+            event.ignore()
+            self.status_label.setText("正在安全结束后台任务，完成后自动退出")
+            QTimer.singleShot(100, self._finish_pending_close)
+            return
+        if self.keep_state_dirty:
+            self._persist_keep_state()
         self._save_settings()
         self.database.close()
         super().closeEvent(event)
 
     def _close_warning_reasons(self) -> list[str]:
         reasons: list[str] = []
+        if self.background_worker and self.background_worker.isRunning():
+            reasons.append("后台文件任务仍在运行，退出会在当前文件处理完后安全停止并保存结果。")
         if self.worker and self.worker.isRunning():
             reasons.append("扫描任务仍在运行，退出会请求停止扫描。")
         if self.restore_worker and self.restore_worker.isRunning():
@@ -763,7 +898,8 @@ class MainWindow(QMainWindow):
                 f"{report_path}\n"
                 "以后可在“健康诊断”页打开数据目录，再进入 reports 文件夹查看。"
             )
-        QMessageBox.information(self, title, message)
+        if not self._close_pending:
+            QMessageBox.information(self, title, message)
 
     def export_current_duplicate_report(self) -> None:
         groups, min_size_bytes, max_size_bytes = self._visible_groups()
@@ -784,8 +920,11 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "导出完成", target)
 
     def start_restore_session(self, session_id: int | None = None, offset_groups: int = 0) -> None:
-        if self.restore_worker and self.restore_worker.isRunning():
+        if self._active_threads():
             return
+        if self.keep_state_dirty:
+            self._persist_keep_state()
+        self._set_task_busy(True, cancellable=False)
         self.load_more_groups_button.setEnabled(False)
         status = format_restore_status(offset_groups, self.restored_total_groups)
         self.status_label.setText(status)
@@ -801,7 +940,13 @@ class MainWindow(QMainWindow):
         )
         self.restore_worker.finished_restore.connect(self.on_restore_finished)
         self.restore_worker.failed.connect(self.on_restore_failed)
+        self._pending_results.add(self.restore_worker)
+        self.restore_worker.finished.connect(self._restore_thread_done)
         self.restore_worker.start()
+
+    def _restore_thread_done(self) -> None:
+        self._pending_results.discard(self.restore_worker)
+        self._set_task_busy(False)
 
     def load_more_restored_groups(self) -> None:
         if self.restored_session_id is None:
@@ -854,6 +999,7 @@ class MainWindow(QMainWindow):
             self._show_task_progress(total_groups, self.restored_loaded_groups)
             if self.restored_loaded_groups < total_groups:
                 self.load_more_groups_button.setEnabled(True)
+                self.load_more_groups_button.setVisible(True)
                 self.load_more_groups_button.setText(
                     f"继续加载更多 ({self.restored_loaded_groups}/{self.restored_total_groups})"
                 )
@@ -863,15 +1009,18 @@ class MainWindow(QMainWindow):
                 self.status_label.setText(f"{status}，无需重新扫描。")
             else:
                 self.load_more_groups_button.setEnabled(False)
+                self.load_more_groups_button.setVisible(False)
                 self.load_more_groups_button.setText("已全部加载")
                 status = format_restore_status(self.restored_loaded_groups, self.restored_total_groups, "已恢复全部历史结果")
                 self.history_state = status
                 self.group_status_label.setText(status)
                 self.status_label.setText(status)
         else:
-            self.status_label.setText("准备就绪")
-            self.group_status_label.setText(f"当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
-            self.history_state = "当前没有可恢复的扫描结果"
+            self.on_scan_finished([], restored=True)
+            self.restored_loaded_groups = 0
+            self.status_label.setText("已恢复扫描：没有重复文件")
+            self.group_status_label.setText("这次扫描已完成，没有重复文件。")
+            self.history_state = "已恢复完成的空扫描"
             self.load_more_groups_button.setEnabled(False)
         self._hide_task_progress()
         self.refresh_health_diagnostics()
@@ -1065,7 +1214,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(8, 12, 8, 12)
         left_layout.setSpacing(8)
-        left_layout.addWidget(section_label("扫描目录"))
+        left_layout.addWidget(section_label("1 · 选择扫描目录"))
         left_layout.addWidget(self.folder_list)
         left_layout.addLayout(folder_buttons)
         self.profile_summary_label.setWordWrap(True)
@@ -1075,13 +1224,28 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(section_label("重复文件处理"))
         left_layout.addWidget(dest_button)
         left_layout.addWidget(self.destination_label)
-        left_layout.addWidget(section_label("相似图片匹配"))
-        left_layout.addWidget(self.threshold_spin)
-        left_layout.addWidget(self.same_ratio_checkbox)
-        left_layout.addWidget(self.same_resolution_checkbox)
-        left_layout.addWidget(self.rotate_hint_checkbox)
-        left_layout.addWidget(section_label("默认保留策略"))
-        left_layout.addWidget(self.strategy_combo)
+        self.scan_options_toggle = QToolButton()
+        self.scan_options_toggle.setObjectName("DisclosureButton")
+        self.scan_options_toggle.setText("匹配设置与保留策略")
+        self.scan_options_toggle.setCheckable(True)
+        self.scan_options_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.scan_options_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        scan_options = QWidget()
+        scan_options_layout = QVBoxLayout(scan_options)
+        scan_options_layout.setContentsMargins(0, 0, 0, 0)
+        scan_options_layout.addWidget(section_label("相似图片匹配"))
+        scan_options_layout.addWidget(self.threshold_spin)
+        scan_options_layout.addWidget(self.same_ratio_checkbox)
+        scan_options_layout.addWidget(self.same_resolution_checkbox)
+        scan_options_layout.addWidget(self.rotate_hint_checkbox)
+        scan_options_layout.addWidget(section_label("默认保留策略"))
+        scan_options_layout.addWidget(self.strategy_combo)
+        scan_options.setVisible(False)
+        self.scan_options_toggle.toggled.connect(scan_options.setVisible)
+        self.scan_options_toggle.toggled.connect(lambda checked: self.scan_options_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+        left_layout.addWidget(self.scan_options_toggle)
+        left_layout.addWidget(scan_options)
         left_layout.addStretch(1)
         left_scroll = QScrollArea()
         left_scroll.setObjectName("SidebarScroll")
@@ -1096,6 +1260,7 @@ class MainWindow(QMainWindow):
         scan_action_footer_layout.setSpacing(8)
         scan_action_footer_layout.addLayout(scan_buttons)
         scan_settings_panel = QWidget()
+        self.scan_settings_panel = scan_settings_panel
         scan_settings_panel.setObjectName("ScanSettingsPanel")
         scan_settings_panel_layout = QVBoxLayout(scan_settings_panel)
         scan_settings_panel_layout.setContentsMargins(0, 0, 0, 0)
@@ -1162,38 +1327,64 @@ class MainWindow(QMainWindow):
         groups_layout = QVBoxLayout(groups_panel)
         groups_layout.setContentsMargins(16, 16, 16, 16)
         groups_layout.setSpacing(8)
-        groups_layout.addWidget(section_label("重复分组"))
+        groups_layout.addWidget(section_label("2 · 核对重复分组"))
         self.group_status_label.setWordWrap(True)
         self.group_status_label.setObjectName("PanelStatusText")
         self.group_status_label.setText("正在准备扫描结果...")
         groups_layout.addWidget(self.group_status_label)
         groups_layout.addWidget(self.group_mode_combo)
         groups_layout.addWidget(self.group_type_filter_combo)
-        groups_layout.addWidget(self.group_sort_combo)
         groups_layout.addWidget(self.group_search_input)
+        self.advanced_filter_toggle = QToolButton()
+        self.advanced_filter_toggle.setObjectName("DisclosureButton")
+        self.advanced_filter_toggle.setText("排序与空间筛选")
+        self.advanced_filter_toggle.setCheckable(True)
+        self.advanced_filter_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.advanced_filter_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.advanced_filter_panel = QWidget()
+        self.advanced_filter_panel.setMinimumHeight(132)
+        self.advanced_filter_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        advanced_filter_layout = QVBoxLayout(self.advanced_filter_panel)
+        advanced_filter_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_filter_layout.addWidget(self.group_sort_combo)
         self.group_min_size_unit_combo.setFixedWidth(72)
         self.group_max_size_unit_combo.setFixedWidth(72)
         group_size_filters = QGridLayout()
         group_size_filters.setHorizontalSpacing(6)
         group_size_filters.setVerticalSpacing(6)
-        group_size_filters.addWidget(QLabel("最小可整理空间"), 0, 0)
+        group_size_filters.setRowMinimumHeight(0, 36)
+        group_size_filters.setRowMinimumHeight(1, 36)
+        group_size_filters.addWidget(QLabel("最小"), 0, 0)
         group_size_filters.addWidget(self.group_min_size_input, 0, 1)
         group_size_filters.addWidget(self.group_min_size_unit_combo, 0, 2)
-        group_size_filters.addWidget(QLabel("最大可整理空间"), 1, 0)
+        group_size_filters.addWidget(QLabel("最大"), 1, 0)
         group_size_filters.addWidget(self.group_max_size_input, 1, 1)
         group_size_filters.addWidget(self.group_max_size_unit_combo, 1, 2)
         group_size_filters.setColumnStretch(1, 1)
-        groups_layout.addLayout(group_size_filters)
-        groups_layout.addWidget(clear_group_filters_button)
-        groups_layout.addWidget(export_report_button)
+        self.group_min_size_input.setPlaceholderText("不限")
+        self.group_max_size_input.setPlaceholderText("不限")
+        advanced_filter_layout.addLayout(group_size_filters)
+        self.advanced_filter_panel.setVisible(False)
+        self.advanced_filter_toggle.toggled.connect(self.advanced_filter_panel.setVisible)
+        self.advanced_filter_toggle.toggled.connect(lambda checked: self.advanced_filter_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+        groups_layout.addWidget(self.advanced_filter_toggle)
+        groups_layout.addWidget(self.advanced_filter_panel)
+        group_actions = QHBoxLayout()
+        clear_group_filters_button.setText("清空筛选")
+        export_report_button.setText("导出报告")
+        group_actions.addWidget(clear_group_filters_button)
+        group_actions.addWidget(export_report_button)
+        groups_layout.addLayout(group_actions)
         groups_layout.addWidget(self.load_more_groups_button)
-        groups_layout.addWidget(self.group_stack)
+        groups_layout.addWidget(self.group_stack, 1)
 
         self.file_table.setHorizontalHeaderLabels(["保留", "保护", "文件名", "大小", "修改时间", "尺寸", "相似度", "建议", "路径"])
         self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.file_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         self.file_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
         configure_data_table(self.file_table)
+        self.file_table.setMinimumHeight(126)
         self.file_table.itemSelectionChanged.connect(self.preview_selected_file)
         self.file_table.itemChanged.connect(self.on_keep_item_changed)
 
@@ -1201,7 +1392,7 @@ class MainWindow(QMainWindow):
         self.thumbnail_list.setIconSize(QPixmap(128, 128).size())
         self.thumbnail_list.setResizeMode(QListView.ResizeMode.Adjust)
         self.thumbnail_list.setMovement(QListView.Movement.Static)
-        self.thumbnail_list.setMaximumHeight(140)
+        self.thumbnail_list.setMaximumHeight(108)
         self.thumbnail_list.setVisible(False)
         self.thumbnail_list.itemClicked.connect(self.select_thumbnail_record)
 
@@ -1227,9 +1418,11 @@ class MainWindow(QMainWindow):
         duplicate_results_layout.setContentsMargins(12, 12, 12, 12)
         duplicate_results_layout.setSpacing(8)
         self.group_detail_summary_label.setWordWrap(True)
+        self.group_detail_summary_label.setMaximumHeight(72)
         duplicate_results_layout.addWidget(self.group_detail_summary_label)
         duplicate_results_layout.addWidget(self.file_table, 1)
         duplicate_results_layout.addWidget(self.thumbnail_list)
+        duplicate_results_layout.addWidget(self.thumbnail_more_button)
 
         duplicate_controls = QWidget()
         duplicate_controls.setObjectName("DuplicateControls")
@@ -1238,7 +1431,7 @@ class MainWindow(QMainWindow):
         duplicate_controls_layout.setSpacing(8)
         duplicate_controls_layout.addWidget(self.retention_hint_label)
         self.bulk_rule_hint_label.setWordWrap(True)
-        duplicate_controls_layout.addWidget(section_label("批量保留规则"))
+        duplicate_controls_layout.addWidget(section_label("3 · 保留与处理"))
         duplicate_controls_layout.addWidget(self.bulk_keep_rule_combo)
         duplicate_controls_layout.addWidget(self.bulk_keep_keyword_input)
         bulk_rule_actions = QVBoxLayout()
@@ -1606,6 +1799,7 @@ class MainWindow(QMainWindow):
         organize_preview_layout.addWidget(section_label("整理预览"))
         organize_preview_layout.addWidget(self.organize_summary_label)
         organize_preview_layout.addWidget(self.organize_preview_table, 1)
+        organize_preview_layout.addWidget(self.organize_more_button)
         organize_execute_row = QHBoxLayout()
         organize_execute_row.addStretch(1)
         organize_execute_row.addWidget(self.organize_execute_button)
@@ -1684,6 +1878,14 @@ class MainWindow(QMainWindow):
         self.page_title_label.setObjectName("PageTitle")
         page_header_layout.addWidget(self.page_title_label)
         page_header_layout.addStretch(1)
+        self.scan_panel_toggle = QToolButton()
+        self.scan_panel_toggle.setObjectName("DisclosureButton")
+        self.scan_panel_toggle.setText("扫描设置")
+        self.scan_panel_toggle.setCheckable(True)
+        self.scan_panel_toggle.setChecked(True)
+        self.scan_panel_toggle.setToolTip("收起扫描设置，让结果和预览获得更多空间")
+        self.scan_panel_toggle.toggled.connect(self.scan_settings_panel.setVisible)
+        page_header_layout.addWidget(self.scan_panel_toggle)
         content_layout.addWidget(self.page_header)
         content_layout.addWidget(tabs, 1)
         layout.addWidget(self.content_shell, 1)
@@ -1697,6 +1899,8 @@ class MainWindow(QMainWindow):
         status_bar.setSizeGripEnabled(True)
         status_bar.addWidget(self.status_label, 1)
         status_bar.addPermanentWidget(self.progress)
+        status_bar.addPermanentWidget(self.task_cancel_button)
+        status_bar.addPermanentWidget(self.retry_batch_button)
 
     def _build_navigation_rail(self) -> QWidget:
         rail = QWidget()
@@ -2128,6 +2332,17 @@ class MainWindow(QMainWindow):
                 selection-background-color: #d9d9d9;
                 selection-color: #212121;
             }
+            QToolButton#DisclosureButton {
+                border: 1px solid #e1e1e1;
+                border-radius: 6px;
+                padding: 6px 8px;
+                background: #ffffff;
+                color: #555555;
+            }
+            QToolButton#DisclosureButton:hover, QToolButton#DisclosureButton:checked {
+                background: #f3f3f3;
+                color: #212121;
+            }
             QComboBox:hover, QSpinBox:hover, QLineEdit:hover {
                 border-color: #bdbdbd;
             }
@@ -2142,10 +2357,10 @@ class MainWindow(QMainWindow):
                 border-color: #e1e1e1;
             }
             QComboBox {
-                padding-right: 36px;
+                padding-right: 4px;
             }
             QComboBox:focus {
-                padding-right: 35px;
+                padding-right: 3px;
             }
             QComboBox:on {
                 border-color: #0285ff;
@@ -2153,7 +2368,7 @@ class MainWindow(QMainWindow):
             QComboBox::drop-down {
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
-                width: 32px;
+                width: 24px;
                 border: none;
                 border-top-right-radius: 6px;
                 border-bottom-right-radius: 6px;
@@ -2769,6 +2984,7 @@ class MainWindow(QMainWindow):
         if session is None:
             return
         self.current_roots = session.root_paths
+        self.restored_session_id = session.id
         existing = {str(path) for path in self._folder_paths()}
         for root in session.root_paths:
             root_text = str(root)
@@ -2776,8 +2992,7 @@ class MainWindow(QMainWindow):
                 self._add_folder_item(root)
                 existing.add(root_text)
         groups = self.database.load_scan_session_groups(session.id)
-        if groups:
-            self.on_scan_finished(groups, restored=True)
+        self.on_scan_finished(groups, restored=True)
 
     def on_tab_changed(self, index: int) -> None:
         page_key = self.page_key_by_index.get(index)
@@ -2786,6 +3001,7 @@ class MainWindow(QMainWindow):
         page_label = self.page_label_by_key[page_key]
         if hasattr(self, "page_title_label"):
             self.page_title_label.setText(page_label)
+            self.scan_panel_toggle.setVisible(page_key == "duplicates")
         navigation_button = self.navigation_buttons.get(page_key)
         if navigation_button is not None:
             navigation_button.setChecked(True)
@@ -2829,6 +3045,14 @@ class MainWindow(QMainWindow):
             organize_target_count=target_count,
             organize_preview_count=len(self.organize_preview_items),
             profile_count=len(self.organize_profiles),
+            scan_completed=self.scan_completed and (
+                {normalize_path(path) for path in self.current_roots}
+                == {normalize_path(path) for path in self._folder_paths()}
+            ),
+            valid_keep_group_count=sum(
+                any(record.keep_selected for record in group.records) for group in self.groups
+            ),
+            scan_running=bool(self.worker and self.worker.isRunning()),
         )
 
     def refresh_onboarding(self) -> None:
@@ -2947,7 +3171,7 @@ class MainWindow(QMainWindow):
             kind_label = "完全重复" if group.kind == "exact" else "相似"
             item = QListWidgetItem(
                 f"[{type_label}] {kind_label} · {group.title}\n"
-                f"{len(group.records)} 个文件 · 可整理 {format_size(group.reclaimable_bytes)}"
+                f"{len(group.records)} 个文件 · 可整理 {format_size(self._group_reclaimable_bytes(group))}"
             )
             item.setForeground(group_category_color(group_category))
             item.setData(Qt.ItemDataRole.UserRole, group)
@@ -2960,7 +3184,10 @@ class MainWindow(QMainWindow):
             self.detail_label.setText("当前没有可预览的文件。")
             self.group_detail_summary_label.setText("选择一个重复分组后，这里会显示占用空间、预估可省、涉及磁盘/目录和推荐保留原因。")
             if not self.groups:
-                self.group_status_label.setText(f"当前还没有扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
+                self.group_status_label.setText(
+                    "本次扫描已完成，没有待处理的重复文件。" if self.scan_completed else
+                    f"当前还没有扫描结果。\n{EMPTY_SCAN_GUIDANCE}"
+                )
             else:
                 self.group_status_label.setText(f"当前筛选下没有匹配的重复分组。\n可清空筛选，或添加目录后重新扫描。")
             return
@@ -3020,11 +3247,11 @@ class MainWindow(QMainWindow):
             type_label = category_label(group_category)
             if selected_type != "全部类型" and type_label != selected_type:
                 continue
-            if min_size_bytes > 0 and group.reclaimable_bytes < min_size_bytes:
+            if min_size_bytes > 0 and self._group_reclaimable_bytes(group) < min_size_bytes:
                 continue
             if min_size_bytes < 0:
                 continue
-            if max_size_bytes > 0 and group.reclaimable_bytes > max_size_bytes:
+            if max_size_bytes > 0 and self._group_reclaimable_bytes(group) > max_size_bytes:
                 continue
             if max_size_bytes < 0:
                 continue
@@ -3037,7 +3264,7 @@ class MainWindow(QMainWindow):
             filtered_groups.append(group)
 
         if sort_label == "按可整理空间：从大到小":
-            filtered_groups.sort(key=lambda item: item.reclaimable_bytes, reverse=True)
+            filtered_groups.sort(key=self._group_reclaimable_bytes, reverse=True)
         elif sort_label == "按文件数：从多到少":
             filtered_groups.sort(key=lambda item: len(item.records), reverse=True)
         return filtered_groups, min_size_bytes, max_size_bytes
@@ -3403,28 +3630,25 @@ class MainWindow(QMainWindow):
         recommended = "、".join(summary.recommended_names[:3]) or "-"
         if len(summary.recommended_names) > 3:
             recommended += f" 等 {len(summary.recommended_names)} 个"
-        disks = "、".join(summary.disks[:4]) or "-"
-        if len(summary.disks) > 4:
-            disks += f" 等 {len(summary.disks)} 个"
-        directories = "、".join(str(path) for path in summary.directories[:3]) or "-"
-        if len(summary.directories) > 3:
-            directories += f" 等 {len(summary.directories)} 个目录"
-        protected_text = f" | 保护目录文件 {summary.protected_count} 个" if summary.protected_count else ""
         return (
-            f"{summary.kind_label} · {summary.category_label} | "
-            f"{summary.file_count} 个文件 | 占用 {format_size(summary.total_bytes)} | "
-            f"预估可省 {format_size(summary.reclaimable_bytes)} | "
-            f"涉及磁盘 {summary.disk_count} 个：{disks} | "
-            f"涉及目录 {summary.directory_count} 个：{directories}{protected_text}\n"
-            f"推荐保留：{recommended}（{summary.recommended_reason}）"
+            f"{summary.kind_label} · {summary.category_label} · {summary.file_count} 个文件\n"
+            f"占用 {format_size(summary.total_bytes)} · 可整理 {format_size(summary.reclaimable_bytes)}"
+            f" · 保护 {summary.protected_count} 项\n"
+            f"推荐：{recommended}"
         )
 
     def _group_key(self, group: DuplicateGroup) -> str:
         return f"{group.kind}|{group.title}|{'|'.join(str(record.path) for record in group.records)}"
 
+    def _group_reclaimable_bytes(self, group: DuplicateGroup) -> int:
+        if not any(record.keep_selected for record in group.records):
+            return 0
+        return sum(record.size for record in group.records
+                   if not record.keep_selected and not is_under_any(record.path, self.protected_roots))
+
     def _persist_keep_state(self) -> None:
-        if self.current_roots:
-            self.database.replace_latest_scan_session(self.current_roots, self.groups)
+        if self.restored_session_id is not None:
+            self.database.update_scan_session_keep_state(self.restored_session_id, self.groups)
         self.keep_state_dirty = False
 
     def _selected_keep_paths(self) -> set[Path]:
@@ -3473,10 +3697,14 @@ class MainWindow(QMainWindow):
         self.organize_preview_items = []
         self.organize_preview_signature = None
         self.organize_preview_table.setRowCount(0)
+        self.organize_more_button.setVisible(False)
+        self._organize_preview_statuses = []
         self.organize_execute_button.setEnabled(False)
         self.organize_summary_label.setText("整理设置已变化，请重新预览并核对建议目标。")
 
     def preview_organize_plan(self) -> None:
+        if self._active_threads():
+            return
         roots = self._folder_paths()
         if not roots:
             QMessageBox.information(self, "需要目录", "请先添加至少一个整理目录。")
@@ -3484,40 +3712,34 @@ class MainWindow(QMainWindow):
 
         self.organize_targets = self.current_organize_targets()
         include_paths = self._selected_keep_paths() if self.organize_keep_only_checkbox.isChecked() else None
-        protected_roots = {normalize_path(path) for path in self.protected_roots}
-        preview = build_organize_preview(
-            roots,
-            self.organize_targets,
-            include_paths=include_paths,
-            exclude_roots=self._organize_excluded_roots(),
-            rule=self._organize_rule_key(),
-        )
-        protected_skipped = sum(
-            1
-            for root in roots
-            for path in (root.rglob("*") if root.exists() and root.is_dir() else [root])
-            if path.is_file() and is_under_any(path, protected_roots)
-        )
-        self.organize_preview_items = preview
-        self.organize_preview_signature = self._current_organize_preview_signature()
-        self.organize_preview_table.setRowCount(len(preview))
+        targets = self.organize_targets
+        excluded = self._organize_excluded_roots()
+        rule = self._organize_rule_key()
+        signature = self._current_organize_preview_signature()
 
-        preview_summary = summarize_organize_preview(preview)
-        for row, item in enumerate(preview):
-            status = describe_organize_preview_item(item)
-            values = [
-                category_label(item.category),
-                status.label,
-                format_size(status.size),
-                item.source.name,
-                str(item.source),
-                str(item.target),
+        def task(_database, progress, should_cancel):
+            preview = build_organize_preview(
+                roots, targets, include_paths=include_paths, exclude_roots=excluded,
+                rule=rule, progress=progress, should_cancel=should_cancel,
+            )
+            return preview, summarize_organize_preview(preview), [
+                describe_organize_preview_item(item) for item in preview
             ]
-            for column, value in enumerate(values):
-                table_item = QTableWidgetItem(value)
-                if column >= 3:
-                    table_item.setToolTip(value)
-                self.organize_preview_table.setItem(row, column, table_item)
+
+        self._start_background_task(
+            task, lambda payload: self._display_organize_preview(payload, signature), "正在生成整理预览"
+        )
+
+    def _display_organize_preview(self, payload, signature) -> None:
+        preview, preview_summary, statuses = payload
+        if signature != self._current_organize_preview_signature():
+            self.status_label.setText("设置已变化，请重新生成预览")
+            return
+        self.organize_preview_items = preview
+        self.organize_preview_signature = signature
+        self._organize_preview_statuses = statuses
+        self.organize_preview_table.setRowCount(0)
+        self._load_more_organize_rows()
         summary_text = (
             f"预览共 {preview_summary.file_count} 个文件"
             f" | {self._category_counts_text(preview_summary)}"
@@ -3526,15 +3748,36 @@ class MainWindow(QMainWindow):
         )
         if self.organize_keep_only_checkbox.isChecked():
             summary_text += " | 当前仅包含重复组中的保留项"
-        if protected_skipped:
-            summary_text += f" | 已跳过保护目录 {protected_skipped} 个文件"
+        if self.protected_roots:
+            summary_text += " | 已排除保护目录"
         self.organize_summary_label.setText(summary_text)
         self.organize_execute_button.setEnabled(bool(preview))
         self.status_label.setText("整理预览已生成")
         self.refresh_onboarding()
         self._save_settings()
 
+    def _load_more_organize_rows(self) -> None:
+        start = self.organize_preview_table.rowCount()
+        end = min(start + 500, len(self.organize_preview_items))
+        self.organize_preview_table.setUpdatesEnabled(False)
+        self.organize_preview_table.setRowCount(end)
+        for row in range(start, end):
+            item = self.organize_preview_items[row]
+            status = self._organize_preview_statuses[row]
+            values = [category_label(item.category), status.label, format_size(status.size),
+                      item.source.name, str(item.source), str(item.target)]
+            for column, value in enumerate(values):
+                table_item = QTableWidgetItem(value)
+                if column >= 3:
+                    table_item.setToolTip(value)
+                self.organize_preview_table.setItem(row, column, table_item)
+        self.organize_preview_table.setUpdatesEnabled(True)
+        self.organize_more_button.setVisible(end < len(self.organize_preview_items))
+        self.organize_more_button.setText(f"继续显示预览（{end}/{len(self.organize_preview_items)}；执行范围为全部预览）")
+
     def execute_organize_plan(self) -> None:
+        if self._active_threads():
+            return
         if not self.organize_preview_items:
             self.organize_summary_label.setText("当前还没有整理预览。请先点“预览整理结果”，确认列表后再执行。")
             QMessageBox.information(self, "没有整理预览", "请先生成整理预览，再执行整理。")
@@ -3553,28 +3796,7 @@ class MainWindow(QMainWindow):
         if not confirmed:
             return
 
-        try:
-            moved = execute_organize_preview(self.organize_preview_items, self.database)
-        except Exception as exc:
-            QMessageBox.critical(self, "整理失败", str(exc))
-            return
-
-        report = build_organize_result_report(self.organize_preview_items, moved, summary)
-        moved_sources = {source for source, _target in moved}
-        if moved_sources:
-            self._remove_moved_sources_from_groups(moved_sources)
-
-        self.organize_preview_items = []
-        self.organize_preview_signature = None
-        self.organize_preview_table.setRowCount(0)
-        self.organize_execute_button.setEnabled(False)
-        self.organize_summary_label.setText(f"整理完成，共移动 {len(moved)} 个文件。")
-        self.status_label.setText(f"整理完成：{report.completed_count}/{report.planned_count} 个文件")
-        self.refresh_onboarding()
-        self.refresh_operations()
-        if self.history_loaded:
-            self.refresh_history()
-        self._show_operation_result_report("整理完成", report)
+        self._launch_batch("organize", deepcopy(self.organize_preview_items), "整理移动", self.destination)
 
     def _remove_moved_sources_from_groups(self, moved_sources: set[Path]) -> None:
         updated_groups: list[DuplicateGroup] = []
@@ -3595,7 +3817,7 @@ class MainWindow(QMainWindow):
         self.group_list.clear()
         for group in self.groups:
             item = QListWidgetItem(
-                f"{group.title}\n{len(group.records)} 个文件 · 可整理 {format_size(group.reclaimable_bytes)}"
+                f"{group.title}\n{len(group.records)} 个文件 · 可整理 {format_size(self._group_reclaimable_bytes(group))}"
             )
             item.setData(Qt.ItemDataRole.UserRole, group)
             self.group_list.addItem(item)
@@ -3613,17 +3835,12 @@ class MainWindow(QMainWindow):
         self.preview_stack.setCurrentWidget(self.preview_label)
         self.group_status_label.setText(f"当前扫描结果：{len(self.groups)} 组重复/相似文件。")
 
-        if self.current_roots:
-            if self.groups:
-                self.database.replace_latest_scan_session(self.current_roots, self.groups)
-            else:
-                if self.restored_session_id is not None:
-                    self.database.delete_scan_session(self.restored_session_id)
-                self.restored_session_id = None
-                self.restored_total_groups = 0
-                self.restored_loaded_groups = 0
-                self.load_more_groups_button.setEnabled(False)
-                self.load_more_groups_button.setText("继续加载更多")
+        if self.restored_session_id is not None:
+            self.database.remove_scan_session_paths(self.restored_session_id, moved_sources)
+            self.restored_total_groups = self.database.count_scan_session_groups(self.restored_session_id)
+            self.restored_loaded_groups = len(self.groups)
+            self.load_more_groups_button.setEnabled(self.restored_loaded_groups < self.restored_total_groups)
+            self.load_more_groups_button.setVisible(self.restored_loaded_groups < self.restored_total_groups)
 
     def save_ai_settings(self) -> None:
         self._save_ai_settings_silent()
@@ -3668,18 +3885,15 @@ class MainWindow(QMainWindow):
         if not roots:
             QMessageBox.information(self, "需要目录", "请先添加至少一个扫描目录。")
             return
-        if self.worker and self.worker.isRunning():
+        if self._active_threads():
             return
         if not self._confirm_scan_roots_are_safe(roots):
             return
 
-        self.group_list.clear()
-        self.directory_tree.clear()
-        self.directory_detail_table.setRowCount(0)
-        self.file_table.setRowCount(0)
-        self.group_detail_summary_label.setText("扫描完成后，这里会显示当前重复分组的空间、目录和推荐保留摘要。")
-        self.preview_label.setText("扫描中")
-        self.detail_label.clear()
+        if self.keep_state_dirty:
+            self._persist_keep_state()
+        self.pending_scan_roots = list(roots)
+        self._set_task_busy(True)
         self._show_task_progress(1, 0)
         self.status_label.setText(format_scan_start(len(roots)))
         self.history_state = "正在执行新扫描"
@@ -3687,7 +3901,6 @@ class MainWindow(QMainWindow):
         self.media_player.stop()
         self.scan_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self.current_roots = roots
 
         self._save_settings()
         self.worker = ScanWorker(
@@ -3700,7 +3913,25 @@ class MainWindow(QMainWindow):
         self.worker.progress_changed.connect(self.on_progress)
         self.worker.finished_groups.connect(self.on_scan_finished)
         self.worker.failed.connect(self.on_scan_failed)
+        self.worker.cancelled.connect(self.on_scan_cancelled)
+        self.worker.finished.connect(self._scan_thread_done)
+        self._pending_results.add(self.worker)
         self.worker.start()
+        self.refresh_onboarding()
+
+    def _scan_thread_done(self) -> None:
+        self._pending_results.discard(self.worker)
+        self._set_task_busy(False)
+        self.refresh_onboarding()
+
+    def on_scan_cancelled(self) -> None:
+        self.pending_scan_roots = None
+        self._hide_task_progress()
+        self.status_label.setText("扫描已取消，原结果和历史记录已保留")
+        self.history_state = "扫描已取消；保留上次完成结果"
+        self.scan_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.refresh_health_diagnostics()
 
     def cancel_scan(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -3715,31 +3946,51 @@ class MainWindow(QMainWindow):
         self._show_task_progress(total, current)
 
     def on_scan_finished(self, groups: list[DuplicateGroup], restored: bool = False) -> None:
-        self.groups = groups
         if not restored:
-            self.restored_session_id = None
+            if self.worker and self.worker.should_cancel():
+                self.on_scan_cancelled()
+                return
+            roots = self.pending_scan_roots if self.pending_scan_roots is not None else self.current_roots
+            for group in groups:
+                if not any(record.keep_selected for record in group.records):
+                    keep = choose_keep_records(group.records, self.strategy_combo.currentText(), self.protected_roots)
+                    selected = {record.path for record in keep.keep_records}
+                    for record in group.records:
+                        record.keep_selected = record.path in selected
+            try:
+                session_id = self.database.save_scan_session(roots, groups)
+            except Exception as exc:
+                self.on_scan_failed(f"保存扫描结果失败，原历史和结果已保留：{exc}")
+                return
+            self.current_roots = list(roots)
+            self.pending_scan_roots = None
+            self.restored_session_id = session_id
+        self.scan_completed = True
+        self._retry_batch = None
+        self.retry_batch_button.setVisible(False)
+        self.groups = groups
+        self.keep_state_dirty = False
+        self.invalidate_organize_preview()
+        if not restored:
             self.restored_total_groups = len(groups)
             self.restored_loaded_groups = len(groups)
             self.load_more_groups_button.setEnabled(False)
+            self.load_more_groups_button.setVisible(False)
             self.load_more_groups_button.setText("继续加载更多")
             self.group_status_label.setText(f"当前扫描结果：{len(groups)} 组重复/相似文件。")
         self.manual_keep_group_keys = {
             self._group_key(group)
             for group in groups
-            if any(record.keep_selected for record in group.records)
         }
         self.keep_state_dirty = False
         self.refresh_group_list()
         self.rebuild_directory_browser()
-        if not restored and self.current_roots:
-            self.database.replace_latest_scan_session(self.current_roots, groups)
         if restored:
             self.history_state = "已恢复最近一次扫描"
             self.status_label.setText(f"已恢复最近一次扫描：{len(groups)} 组重复/相似文件")
         else:
             self.history_state = "新扫描已完成"
             self.status_label.setText(f"扫描完成：发现 {len(groups)} 组重复/相似文件")
-        self.preview_label.setText("选择图片以预览")
         self._hide_task_progress()
         self.scan_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
@@ -3749,6 +4000,7 @@ class MainWindow(QMainWindow):
         self.refresh_onboarding()
 
     def on_scan_failed(self, message: str) -> None:
+        self.pending_scan_roots = None
         self._hide_task_progress()
         QMessageBox.critical(self, "扫描失败", message)
         self.status_label.setText("扫描失败")
@@ -3777,6 +4029,9 @@ class MainWindow(QMainWindow):
         keep_reasons = describe_keep_reasons(group.records, self.strategy_combo.currentText(), self.protected_roots)
         summary = summarize_duplicate_group(group, self.protected_roots, self.strategy_combo.currentText())
         self.group_detail_summary_label.setText(self._duplicate_group_summary_text(summary))
+        self.group_detail_summary_label.setToolTip(
+            f"推荐原因：{summary.recommended_reason}\n涉及目录：\n" + "\n".join(str(path) for path in summary.directories)
+        )
         self.file_table.setRowCount(len(group.records))
         self.updating_keep_checks = True
         for row, record in enumerate(group.records):
@@ -3815,18 +4070,31 @@ class MainWindow(QMainWindow):
             path_item = QTableWidgetItem(str(record.path))
             path_item.setToolTip(str(record.path))
             self.file_table.setItem(row, 8, path_item)
-            self._add_thumbnail(record, row)
+            if is_image(record.path):
+                self._thumbnail_queue.append((record, row))
         self.updating_keep_checks = False
+        self._load_more_thumbnails()
         self.file_table.selectRow(0)
 
     def _clear_thumbnails(self) -> None:
+        self._thumbnail_queue = []
+        self._thumbnail_offset = 0
         self.thumbnail_list.clear()
         self.thumbnail_list.setVisible(False)
+        self.thumbnail_more_button.setVisible(False)
+
+    def _load_more_thumbnails(self) -> None:
+        end = min(self._thumbnail_offset + 24, len(self._thumbnail_queue))
+        for record, row in self._thumbnail_queue[self._thumbnail_offset:end]:
+            self._add_thumbnail(record, row)
+        self._thumbnail_offset = end
+        self.thumbnail_more_button.setVisible(end < len(self._thumbnail_queue))
+        self.thumbnail_more_button.setText(f"更多缩略图（{end}/{len(self._thumbnail_queue)}；完整文件见上方列表）")
 
     def _add_thumbnail(self, record: FileRecord, row: int) -> None:
         if not is_image(record.path) or not record.path.exists():
             return
-        pixmap = QPixmap(str(record.path))
+        pixmap = scaled_image_preview(record.path, 128, 128)
         if pixmap.isNull():
             return
         icon = QIcon(pixmap.scaled(128, 128, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
@@ -3903,7 +4171,7 @@ class MainWindow(QMainWindow):
         image_label.setMinimumSize(420, 300)
         image_label.setStyleSheet("background: #f6f8fa; border-radius: 6px;")
         if item.details.exists and is_image(item.record.path):
-            pixmap = QPixmap(str(item.record.path))
+            pixmap = scaled_image_preview(item.record.path, 420, 300)
             if not pixmap.isNull():
                 image_label.setPixmap(
                     pixmap.scaled(
@@ -3963,6 +4231,13 @@ class MainWindow(QMainWindow):
         record.keep_selected = item.checkState() == Qt.CheckState.Checked
         self.manual_keep_group_keys.add(self._group_key(group))
         self.keep_state_dirty = True
+        summary = summarize_duplicate_group(group, self.protected_roots, self.strategy_combo.currentText())
+        if not any(record.keep_selected for record in group.records):
+            self.group_detail_summary_label.setText("本组尚未选择保留文件，处理前请至少保留一项。")
+        else:
+            self.group_detail_summary_label.setText(self._duplicate_group_summary_text(summary))
+        current.setText(f"{group.title}\n{len(group.records)} 个文件 · 可整理 {format_size(self._group_reclaimable_bytes(group))}")
+        self.refresh_onboarding()
         if self.organize_keep_only_checkbox.isChecked():
             self.invalidate_organize_preview()
 
@@ -3972,11 +4247,18 @@ class MainWindow(QMainWindow):
             group = current.data(Qt.ItemDataRole.UserRole)
             if isinstance(group, DuplicateGroup):
                 group_key = self._group_key(group)
-                self.manual_keep_group_keys.discard(group_key)
+                selected = choose_keep_records(
+                    group.records, self.strategy_combo.currentText(), self.protected_roots
+                )
+                keep_paths = {record.path for record in selected.keep_records}
+                self.manual_keep_group_keys.add(group_key)
                 for record in group.records:
-                    record.keep_selected = False
+                    record.keep_selected = record.path in keep_paths
                 self.keep_state_dirty = True
+                self._persist_keep_state()
             self.populate_group(current, None)
+            self.refresh_group_list()
+            self.refresh_onboarding()
         if self.organize_keep_only_checkbox.isChecked():
             self.invalidate_organize_preview()
 
@@ -4051,7 +4333,7 @@ class MainWindow(QMainWindow):
         if is_image(record.path) and record.path.exists():
             self.media_player.stop()
             self.preview_stack.setCurrentWidget(self.preview_label)
-            pixmap = QPixmap(str(record.path))
+            pixmap = scaled_image_preview(record.path, self.preview_label.width(), 300)
             if not pixmap.isNull():
                 scaled = pixmap.scaled(
                     self.preview_label.width(),
@@ -4073,6 +4355,8 @@ class MainWindow(QMainWindow):
         self.preview_label.setText("此文件暂无预览")
 
     def move_unchecked(self) -> None:
+        if self._active_threads():
+            return
         if self.keep_state_dirty:
             self._persist_keep_state()
         groups, _min_size, _max_size = self._visible_groups()
@@ -4080,7 +4364,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "没有可处理分组", "当前筛选下没有重复分组。")
             return
 
-        plan = build_processing_plan(groups, {normalize_path(path) for path in self.protected_roots})
+        plan = build_processing_plan(groups, {normalize_path(path) for path in self.protected_roots}, validate_files=True)
         if plan.invalid_groups:
             first = plan.invalid_groups[0]
             self.group_mode_combo.setCurrentIndex(0)
@@ -4092,7 +4376,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "需要至少保留一个文件",
-                f"当前筛选结果中有 {len(plan.invalid_groups)} 组没有勾选保留文件。请先应用保留规则或手动勾选。",
+                f"有 {len(plan.invalid_groups)} 组缺少有效保留文件，或保留文件已变化。请重新扫描或选择存在且未变化的保留项。",
             )
             return
 
@@ -4122,28 +4406,69 @@ class MainWindow(QMainWindow):
         if not confirmed:
             return
 
-        try:
-            moved_targets: list[Path] = []
-            moved_pairs: list[tuple[Path, Path]] = []
-            if action_label == "移动到回收站":
-                moved_paths = trash_records(selected_to_move, self.database)
-                moved_count = len(moved_paths)
-                moved_sources = set(moved_paths)
-            else:
-                moved = move_records(selected_to_move, self.destination, "当前筛选结果", self.database)
-                moved_count = len(moved)
-                moved_sources = {source for source, _target in moved}
-                moved_targets = [target for _source, target in moved]
-                moved_pairs = moved
-        except Exception as exc:
-            QMessageBox.critical(self, "处理失败", str(exc))
-            return
+        self._launch_batch("duplicates", deepcopy(plan), action_label, self.destination)
 
-        report = build_processing_result_report(plan, action_label, moved_sources, moved_targets, moved_pairs=moved_pairs)
-        self.status_label.setText(f"处理完成：{moved_count}/{report.planned_count} 个文件")
-        self._show_operation_result_report("处理完成", report)
+    def _launch_batch(self, kind, payload, action, destination, previous_result=None) -> None:
+        def task(database, progress, should_cancel):
+            if kind == "duplicates":
+                return process_duplicates(payload, destination, action, database, progress=progress,
+                                          should_cancel=should_cancel, previous_result=previous_result)
+            return process_organize(payload, database, progress=progress, should_cancel=should_cancel,
+                                    previous_result=previous_result)
+
+        self._start_background_task(
+            task,
+            lambda result: self._finish_batch(kind, payload, action, destination, result),
+            "正在校验文件并执行处理",
+        )
+
+    def _finish_batch(self, kind, payload, action, destination, result) -> None:
+        report = build_batch_result_report(
+            result, action, title="文件整理报告" if kind == "organize" else "重复文件处理报告",
+            protected_skip_count=payload.protected_skip_count if kind == "duplicates" else 0,
+        )
+        self._retry_batch = (kind, payload, action, destination, result) if result.retryable_sources else None
+        self.retry_batch_button.setVisible(self._retry_batch is not None)
+        if result.completed_sources:
+            try:
+                self._remove_moved_sources_from_groups(result.completed_sources)
+            except Exception as exc:
+                logging.getLogger(__name__).exception("Failed to update history after file operation")
+                report = replace(report, notes=(*report.notes, f"历史更新失败，请重新扫描核对：{exc}"))
+        if kind == "organize":
+            self.invalidate_organize_preview()
+        self._retry_signature = self._batch_safety_signature()
         self.refresh_operations()
-        self._remove_moved_sources_from_groups(moved_sources)
+        if self.history_loaded:
+            self.refresh_history()
+        self.refresh_onboarding()
+        self.status_label.setText(
+            f"处理结束：成功 {result.completed_count}，失败 {result.failed_count}，"
+            f"跳过 {result.skipped_count}，取消 {result.cancelled_count}"
+        )
+        self._show_operation_result_report("处理结果", report)
+
+    def retry_failed_batch(self) -> None:
+        if self._retry_batch is None or self._active_threads():
+            return
+        kind, payload, action, destination, previous = self._retry_batch
+        if self._retry_signature != self._batch_safety_signature():
+            self._retry_batch = None
+            self.retry_batch_button.setVisible(False)
+            QMessageBox.information(self, "处理设置已变化", "保留项、保护目录或整理设置已改变，请按当前设置重新预览或执行处理。")
+            return
+        if self._confirm_action("重试未完成项", f"将重试 {len(previous.retryable_sources)} 个失败或取消的文件；已成功的文件不会重复处理。"):
+            self._launch_batch(kind, payload, action, destination, previous)
+
+    def _batch_safety_signature(self) -> tuple:
+        return (
+            self.restored_session_id,
+            tuple((str(record.path), record.keep_selected) for group in self.groups for record in group.records),
+            tuple(sorted(str(normalize_path(path)) for path in self.protected_roots)),
+            str(self.destination),
+            self.action_combo.currentText(),
+            self._current_organize_preview_signature(),
+        )
 
     def refresh_operations(self) -> None:
         all_operations, operations = self._filtered_operations()
@@ -4316,6 +4641,8 @@ class MainWindow(QMainWindow):
         self.load_selected_scan_session()
 
     def load_selected_scan_session(self) -> None:
+        if self._active_threads():
+            return
         row = self.session_table.currentRow()
         if row < 0:
             QMessageBox.information(self, "没有选中任务", "请先在扫描历史中选中一条扫描任务。")
@@ -4324,21 +4651,9 @@ class MainWindow(QMainWindow):
         if id_item is None:
             return
         session_id = int(id_item.text())
-        self.restored_session_id = session_id
-        self.restored_loaded_groups = 0
         self.group_status_label.setText("正在加载选中的历史扫描任务...")
         self.status_label.setText("正在加载历史扫描任务")
-        self.group_list.clear()
-        self.directory_tree.clear()
-        self.directory_detail_table.setRowCount(0)
-        self.file_table.setRowCount(0)
-        self.group_detail_summary_label.setText("正在加载历史扫描任务...")
-        self._clear_thumbnails()
-        self.preview_label.setPixmap(QPixmap())
-        self.preview_label.setText("选择图片以预览")
-        self.detail_label.clear()
         self.media_player.stop()
-        self.preview_stack.setCurrentWidget(self.preview_label)
         self.start_restore_session(session_id=session_id, offset_groups=0)
 
     def delete_selected_scan_session(self) -> None:
@@ -4361,6 +4676,7 @@ class MainWindow(QMainWindow):
 
         self.database.delete_scan_session(session_id)
         if self.restored_session_id == session_id:
+            self.scan_completed = False
             self.restored_session_id = None
             self.restored_total_groups = 0
             self.restored_loaded_groups = 0
@@ -4387,6 +4703,9 @@ class MainWindow(QMainWindow):
             return
         self.database.clear_scanned_files()
         self.database.clear_scan_sessions()
+        self.scan_completed = False
+        self.restored_session_id = None
+        self.restored_total_groups = self.restored_loaded_groups = 0
         self.groups = []
         self.group_status_label.setText(f"扫描历史已清空，当前没有可恢复的扫描结果。\n{EMPTY_SCAN_GUIDANCE}")
         self.group_list.clear()
@@ -4434,6 +4753,8 @@ class MainWindow(QMainWindow):
         return operation
 
     def undo_selected_operation(self) -> None:
+        if self._active_threads():
+            return
         operation = self.selected_operation()
         if operation is None:
             QMessageBox.information(self, "没有选中记录", "请先在操作记录中选中一条移动记录。")
@@ -4449,16 +4770,11 @@ class MainWindow(QMainWindow):
         if not confirmed:
             return
 
-        try:
-            restored = undo_move(operation, self.database)
-        except Exception as exc:
-            QMessageBox.critical(self, "撤销失败", str(exc))
-            return
-
-        QMessageBox.information(self, "撤销完成", f"文件已恢复到：\n{restored}")
-        self.refresh_operations()
+        self._start_undo_batch([operation])
 
     def undo_filtered_operations(self) -> None:
+        if self._active_threads():
+            return
         _all_operations, visible_operations = self._filtered_operations()
         candidates = [
             operation
@@ -4481,14 +4797,28 @@ class MainWindow(QMainWindow):
         if not confirmed:
             return
 
-        result = undo_move_operations(candidates, self.database)
+        self._start_undo_batch(candidates)
+
+    def _start_undo_batch(self, candidates) -> None:
+        self._start_background_task(
+            lambda database, progress, should_cancel: undo_move_operations(
+                candidates, database, progress=progress, should_cancel=should_cancel
+            ),
+            self._finish_undo_batch, "正在恢复文件",
+        )
+
+    def _finish_undo_batch(self, result) -> None:
         lines = [
             "批量撤销完成",
-            f"计划撤销：{len(candidates)} 条",
+            f"计划撤销：{len(result.items)} 条",
             f"成功恢复：{result.completed_count} 条",
             f"跳过：{result.skipped_count} 条",
             f"失败：{result.failed_count} 条",
+            f"取消：{sum(item.status == 'cancelled' for item in result.items)} 条",
+            f"恢复日志：{result.journal_path}",
         ]
+        warnings = [item for item in result.items if item.status == "restored" and item.message != "已恢复"]
+        lines.extend(f"- {item.source_path}: {item.message}" for item in warnings[:8])
         failed_items = [item for item in result.items if item.status == "failed"]
         if failed_items:
             lines.append("")
@@ -4499,7 +4829,10 @@ class MainWindow(QMainWindow):
                 lines.append(f"- 另有 {len(failed_items) - 8} 条失败记录未显示")
         message = "\n".join(lines)
         self.status_label.setText(f"批量撤销完成：成功 {result.completed_count} 条，失败 {result.failed_count} 条")
-        if result.failed_count:
+        if self._close_pending:
+            self.refresh_operations()
+            return
+        if result.failed_count or warnings:
             QMessageBox.warning(self, "批量撤销完成", message)
         else:
             QMessageBox.information(self, "批量撤销完成", message)

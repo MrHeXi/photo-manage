@@ -102,9 +102,12 @@ def _git_commit() -> str:
     return completed.stdout.strip() if completed.returncode == 0 else ""
 
 
-def get_build_info(version: str = "0.1.0") -> BuildInfo:
+def get_build_info(version: str | None = None) -> BuildInfo:
     """Return the best available identity for this running application."""
 
+    if version is None:
+        from photo_dedupe import __version__
+        version = __version__
     sidecar = _read_sidecar() or {}
     resolved_version = str(sidecar.get("version") or version)
     frozen = bool(getattr(sys, "frozen", False))

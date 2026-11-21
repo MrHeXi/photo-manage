@@ -18,6 +18,9 @@ class OnboardingSnapshot:
     organize_target_count: int
     organize_preview_count: int
     profile_count: int
+    scan_completed: bool | None = None
+    valid_keep_group_count: int | None = None
+    scan_running: bool = False
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,11 @@ class OnboardingStep:
 def build_onboarding_steps(snapshot: OnboardingSnapshot) -> list[OnboardingStep]:
     roots_ready = snapshot.scan_root_count > 0
     groups_ready = snapshot.duplicate_group_count > 0
-    keep_ready = snapshot.keep_selected_count > 0
+    scan_done = groups_ready if snapshot.scan_completed is None else snapshot.scan_completed
+    valid_groups = snapshot.valid_keep_group_count
+    if valid_groups is None:
+        valid_groups = min(snapshot.keep_selected_count, snapshot.duplicate_group_count)
+    keep_ready = scan_done and valid_groups == snapshot.duplicate_group_count
     targets_ready = snapshot.organize_target_count >= 4
     preview_ready = snapshot.organize_preview_count > 0
 
@@ -58,15 +65,21 @@ def build_onboarding_steps(snapshot: OnboardingSnapshot) -> list[OnboardingStep]
         OnboardingStep(
             key="scan",
             title="扫描重复文件",
-            status=STATUS_DONE if groups_ready else (STATUS_NEXT if roots_ready else STATUS_WAITING),
-            detail=f"当前有 {snapshot.duplicate_group_count} 个重复/相似分组" if groups_ready else "等待扫描结果",
-            action="开始扫描" if roots_ready and not groups_ready else "继续",
+            status=STATUS_WAITING if snapshot.scan_running else (STATUS_DONE if scan_done else (STATUS_NEXT if roots_ready else STATUS_WAITING)),
+            detail="正在扫描，完成后更新结果" if snapshot.scan_running else (
+                f"扫描完成，共 {snapshot.duplicate_group_count} 个重复/相似分组" if scan_done else "等待扫描结果"
+            ),
+            action="开始扫描" if roots_ready and not scan_done and not snapshot.scan_running else "继续",
         ),
         OnboardingStep(
             key="keep_rule",
             title="应用保留规则",
             status=STATUS_DONE if keep_ready else (STATUS_NEXT if groups_ready else STATUS_WAITING),
-            detail=f"已标记保留 {snapshot.keep_selected_count} 个文件" if keep_ready else "扫描后可批量标记保留文件",
+            detail=(
+                "本次扫描没有重复文件，无需处理" if scan_done and not groups_ready else
+                f"{valid_groups}/{snapshot.duplicate_group_count} 组已设置保留文件；请核对后处理" if groups_ready else
+                "扫描后可批量标记保留文件"
+            ),
             action="应用保留规则" if groups_ready and not keep_ready else "继续",
         ),
         OnboardingStep(

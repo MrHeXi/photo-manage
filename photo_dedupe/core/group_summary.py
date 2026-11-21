@@ -32,6 +32,9 @@ def summarize_duplicate_group(
     protected_roots = protected_roots or set()
     records = group.records
     keep_result = choose_keep_records(records, keep_rule, protected_roots)
+    keep_paths = {record.path for record in records if record.keep_selected}
+    if not keep_paths:
+        keep_paths = {record.path for record in keep_result.keep_records}
     directories = sorted({record.path.parent for record in records}, key=lambda item: str(item).lower())
     disks = sorted({_disk_label(record.path) for record in records})
 
@@ -40,7 +43,8 @@ def summarize_duplicate_group(
         category_label=category_label(classify_group_category([record.path for record in records])),
         file_count=len(records),
         total_bytes=sum(record.size for record in records),
-        reclaimable_bytes=group.reclaimable_bytes,
+        reclaimable_bytes=sum(record.size for record in records
+                              if record.path not in keep_paths and not is_under_any(record.path, protected_roots)),
         directory_count=len(directories),
         directories=directories,
         disk_count=len(disks),

@@ -231,7 +231,8 @@ class BrandingAssetTests(unittest.TestCase):
         content = script.read_text(encoding="utf-8")
 
         self.assertIn("CreateFromDirectory", content)
-        self.assertIn("photo_dedupe.__version__", content)
+        self.assertIn("build-info.json", content)
+        self.assertIn("-Wait -PassThru", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
         self.assertIn("install-shortcut.ps1", content)
         self.assertIn("remove-shortcut.ps1", content)
@@ -2131,7 +2132,7 @@ class DuplicateScannerTests(unittest.TestCase):
         self.assertEqual(summary.category_label, "照片")
         self.assertEqual(summary.file_count, 2)
         self.assertEqual(summary.total_bytes, 110)
-        self.assertEqual(summary.reclaimable_bytes, 10)
+        self.assertEqual(summary.reclaimable_bytes, 100)
         self.assertEqual(summary.directory_count, 2)
         self.assertEqual(summary.disk_count, 2)
         self.assertEqual(summary.protected_count, 1)
