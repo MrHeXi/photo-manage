@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionComboBox
 
 from photo_dedupe.core.models import DuplicateGroup, FileRecord
 from photo_dedupe.core.batch_operations import BatchResult, BatchItemResult
+from photo_dedupe.core.file_ops import UndoMoveBatchResult, UndoMoveItemResult
 from photo_dedupe.core.selection import build_processing_plan
 from photo_dedupe.core.onboarding import OnboardingSnapshot, build_onboarding_steps, STATUS_DONE
 from photo_dedupe.core.scanner import ScanCancelled
@@ -223,6 +224,48 @@ class UiImprovementsTests(unittest.TestCase):
         self.assertIsNotNone(self.window.database.get_scan_session(self.window.restored_session_id))
         self.assertTrue(self.window.main_tabs.isEnabled())
 
+    def test_completed_processing_saves_and_shows_report_when_refreshes_fail(self):
+        group = self.load_group()
+        self.window.destination = self.root / "destination"
+        self.window.history_loaded = True
+        with patch.object(self.window, "refresh_operations", side_effect=OSError("operations unavailable")), \
+                patch.object(self.window, "refresh_history", side_effect=OSError("history unavailable")), \
+                patch("photo_dedupe.ui.main_window.QMessageBox.information") as message:
+            self.window.move_unchecked()
+            self.pump(lambda: not self.window._active_threads() and not self.window._pending_results)
+        reports = list(self.window._operation_report_dir().glob("*-operation-report.txt"))
+        self.assertEqual(len(reports), 1)
+        text = reports[0].read_text(encoding="utf-8")
+        self.assertIn("实际完成：2", text)
+        self.assertIn("操作记录刷新失败", text)
+        self.assertIn("扫描历史刷新失败", text)
+        self.assertIn("operations unavailable", text)
+        self.assertTrue(message.called)
+        self.assertIn(str(reports[0]), message.call_args.args[2])
+        self.assertTrue(group.records[0].path.exists())
+        self.assertEqual(len(self.window.database.list_operations()), 2)
+        self.assertTrue(self.window.main_tabs.isEnabled())
+
+    def test_undo_refresh_failure_preserves_summary_and_does_not_block_close(self):
+        result = UndoMoveBatchResult(
+            [UndoMoveItemResult(
+                1, self.root / "original.txt", self.root / "moved.txt", self.root / "original.txt",
+                "restored", "已恢复",
+            )],
+            self.root / "undo.jsonl",
+        )
+        with patch.object(self.window, "refresh_operations", side_effect=OSError("unavailable")), \
+                patch("photo_dedupe.ui.main_window.QMessageBox.warning") as message:
+            self.window._finish_undo_batch(result)
+            self.assertIn("成功恢复：1", message.call_args.args[2])
+            self.assertIn("操作记录刷新失败", message.call_args.args[2])
+            self.assertIn(str(result.journal_path), message.call_args.args[2])
+            message.reset_mock()
+            self.window._close_pending = True
+            self.window._finish_undo_batch(result)
+            message.assert_not_called()
+            self.window._close_pending = False
+
     def test_organize_preview_pages_display_without_truncating_execution_plan(self):
         preview = [OrganizePreviewItem(self.root / f"{i}.txt", "document", "test", self.root / "out" / f"{i}.txt")
                    for i in range(1201)]
@@ -270,6 +313,68 @@ class UiImprovementsTests(unittest.TestCase):
             self.pump(lambda: not self.window._active_threads())
         self.assertIs(self.window.organize_preview_items, old)
         self.window.organize_preview_items = []
+
+    def test_directory_tree_preview_runs_in_worker_and_uses_pages(self):
+        preview = [
+            OrganizePreviewItem(self.root / f"{index}.txt", "document", "test", self.root / "out" / f"{index}.txt")
+            for index in range(1201)
+        ]
+        main_thread = threading.get_ident()
+        worker_threads = []
+
+        def build(roots, targets, *, include_paths, exclude_roots, rule, progress, should_cancel):
+            worker_threads.append(threading.get_ident())
+            self.assertEqual(set(roots), include_paths)
+            self.assertIsNotNone(progress)
+            self.assertFalse(should_cancel())
+            return [item for item in preview if item.source in include_paths]
+
+        with patch.object(self.window, "selected_directory_browser_paths", return_value=[item.source for item in preview]), \
+                patch("photo_dedupe.ui.main_window.build_organize_preview", side_effect=build):
+            self.window.preview_selected_directory_paths()
+            self.pump(lambda: not self.window._active_threads() and not self.window._pending_results)
+        self.assertNotEqual(worker_threads, [main_thread])
+        self.assertEqual(len(worker_threads), 1)
+        self.assertEqual(len(self.window.organize_preview_items), 1201)
+        self.assertEqual(self.window.organize_preview_table.rowCount(), 500)
+        self.assertFalse(self.window.organize_more_button.isHidden())
+        self.assertIn("目录树选择", self.window.organize_summary_label.text())
+        self.assertEqual(self.window.main_tabs.currentIndex(), self.window.page_index_by_key["organizer"])
+        self.window._load_more_organize_rows()
+        self.assertEqual(self.window.organize_preview_table.rowCount(), 1000)
+
+        with patch.object(self.window, "selected_directory_browser_paths", return_value=[preview[0].source]), \
+                patch("photo_dedupe.ui.main_window.build_organize_preview", side_effect=build):
+            self.window.preview_selected_directory_paths()
+            self.pump(lambda: not self.window._active_threads() and not self.window._pending_results)
+        self.assertEqual(self.window.organize_preview_table.rowCount(), 1)
+        self.assertEqual(len(self.window._organize_preview_statuses), 1)
+        self.assertTrue(self.window.organize_more_button.isHidden())
+
+    def test_directory_tree_preview_cancellation_keeps_previous_preview(self):
+        old = [OrganizePreviewItem(self.root / "old.txt", "document", "test", self.root / "out" / "old.txt")]
+        self.window._display_organize_preview(
+            (old, summarize_organize_preview(old), [describe_organize_preview_item(old[0])]),
+            self.window._current_organize_preview_signature(),
+        )
+        entered = threading.Event()
+
+        def build(*_args, should_cancel, **_kwargs):
+            from photo_dedupe.core.organizer import PreviewCancelled
+            entered.set()
+            while not should_cancel():
+                time.sleep(0.005)
+            raise PreviewCancelled()
+
+        with patch.object(self.window, "selected_directory_browser_paths", return_value=[self.root / "new.txt"]), \
+                patch("photo_dedupe.ui.main_window.build_organize_preview", side_effect=build):
+            self.window.preview_selected_directory_paths()
+            self.pump(entered.is_set)
+            self.window.cancel_active_task()
+            self.pump(lambda: not self.window._active_threads() and not self.window._pending_results)
+        self.assertIs(self.window.organize_preview_items, old)
+        self.assertEqual(self.window.organize_preview_table.rowCount(), 1)
+        self.assertIn("取消", self.window.status_label.text())
 
     def test_compact_combo_actual_edit_rect_fits_text_with_and_without_focus(self):
         self.window.resize(1024, 680)

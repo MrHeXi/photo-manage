@@ -3478,54 +3478,18 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "没有关联分组", "当前目录节点没有可定位的重复分组。")
 
     def preview_selected_directory_paths(self) -> None:
+        if self._active_threads() or self._pending_results:
+            return
         paths = self.selected_directory_browser_paths()
         if not paths:
             QMessageBox.information(self, "没有可整理文件", "请先在磁盘目录视图中选择盘符、目录或文件。")
             return
 
-        self.organize_targets = self.current_organize_targets()
         include_paths = set(paths)
         if self.organize_keep_only_checkbox.isChecked():
             include_paths &= self._selected_keep_paths()
-        preview = build_organize_preview(
-            paths,
-            self.organize_targets,
-            include_paths=include_paths,
-            exclude_roots=self._organize_excluded_roots(),
-            rule=self._organize_rule_key(),
-        )
-        protected_skipped = sum(1 for path in paths if is_under_any(path, self.protected_roots))
-        self.organize_preview_items = preview
-        self.organize_preview_signature = self._current_organize_preview_signature()
-        self.organize_preview_table.setRowCount(len(preview))
-
-        preview_summary = summarize_organize_preview(preview)
-        for row, preview_item in enumerate(preview):
-            status = describe_organize_preview_item(preview_item)
-            values = [
-                category_label(preview_item.category),
-                status.label,
-                format_size(status.size),
-                preview_item.source.name,
-                str(preview_item.source),
-                str(preview_item.target),
-            ]
-            for column, value in enumerate(values):
-                table_item = QTableWidgetItem(value)
-                if column >= 3:
-                    table_item.setToolTip(value)
-                self.organize_preview_table.setItem(row, column, table_item)
-        self.organize_summary_label.setText(
-            f"来自目录树选择的预览：{preview_summary.file_count} 个文件"
-            f" | {self._category_counts_text(preview_summary)}"
-            f" | 总大小 {format_size(preview_summary.total_bytes)}"
-            f" | 目标目录 {len(preview_summary.target_directories)} 个"
-            f" | 跳过保护目录 {protected_skipped}"
-        )
-        self._set_main_tab("整理中心")
-        self.organize_execute_button.setEnabled(bool(preview))
-        self.status_label.setText("已根据目录树选择生成整理预览")
-        self.refresh_onboarding()
+        if self._start_organize_preview(paths, include_paths, source_label="目录树选择"):
+            self._set_main_tab("整理中心")
 
     def current_organize_targets(self) -> OrganizeTargetConfig:
         return OrganizeTargetConfig(
@@ -3703,15 +3667,20 @@ class MainWindow(QMainWindow):
         self.organize_summary_label.setText("整理设置已变化，请重新预览并核对建议目标。")
 
     def preview_organize_plan(self) -> None:
-        if self._active_threads():
+        if self._active_threads() or self._pending_results:
             return
         roots = self._folder_paths()
         if not roots:
             QMessageBox.information(self, "需要目录", "请先添加至少一个整理目录。")
             return
 
-        self.organize_targets = self.current_organize_targets()
         include_paths = self._selected_keep_paths() if self.organize_keep_only_checkbox.isChecked() else None
+        self._start_organize_preview(roots, include_paths)
+
+    def _start_organize_preview(
+        self, roots: list[Path], include_paths: set[Path] | None, source_label: str = "",
+    ) -> bool:
+        self.organize_targets = self.current_organize_targets()
         targets = self.organize_targets
         excluded = self._organize_excluded_roots()
         rule = self._organize_rule_key()
@@ -3726,11 +3695,12 @@ class MainWindow(QMainWindow):
                 describe_organize_preview_item(item) for item in preview
             ]
 
-        self._start_background_task(
-            task, lambda payload: self._display_organize_preview(payload, signature), "正在生成整理预览"
+        return self._start_background_task(
+            task, lambda payload: self._display_organize_preview(payload, signature, source_label),
+            "正在生成整理预览",
         )
 
-    def _display_organize_preview(self, payload, signature) -> None:
+    def _display_organize_preview(self, payload, signature, source_label: str = "") -> None:
         preview, preview_summary, statuses = payload
         if signature != self._current_organize_preview_signature():
             self.status_label.setText("设置已变化，请重新生成预览")
@@ -3741,7 +3711,7 @@ class MainWindow(QMainWindow):
         self.organize_preview_table.setRowCount(0)
         self._load_more_organize_rows()
         summary_text = (
-            f"预览共 {preview_summary.file_count} 个文件"
+            f"{'来自' + source_label + '的预览' if source_label else '预览'}共 {preview_summary.file_count} 个文件"
             f" | {self._category_counts_text(preview_summary)}"
             f" | 总大小 {format_size(preview_summary.total_bytes)}"
             f" | 目标目录 {len(preview_summary.target_directories)} 个"
@@ -3752,7 +3722,7 @@ class MainWindow(QMainWindow):
             summary_text += " | 已排除保护目录"
         self.organize_summary_label.setText(summary_text)
         self.organize_execute_button.setEnabled(bool(preview))
-        self.status_label.setText("整理预览已生成")
+        self.status_label.setText(f"已根据{source_label}生成整理预览" if source_label else "整理预览已生成")
         self.refresh_onboarding()
         self._save_settings()
 
@@ -4438,10 +4408,15 @@ class MainWindow(QMainWindow):
         if kind == "organize":
             self.invalidate_organize_preview()
         self._retry_signature = self._batch_safety_signature()
-        self.refresh_operations()
+        refresh_tasks = [("操作记录", self.refresh_operations), ("新手向导", self.refresh_onboarding)]
         if self.history_loaded:
-            self.refresh_history()
-        self.refresh_onboarding()
+            refresh_tasks.append(("扫描历史", self.refresh_history))
+        for label, refresh in refresh_tasks:
+            try:
+                refresh()
+            except Exception as exc:
+                logging.getLogger(__name__).exception("Failed to refresh %s after file operation", label)
+                report = replace(report, notes=(*report.notes, f"{label}刷新失败，实际处理结果见本报告：{exc}"))
         self.status_label.setText(
             f"处理结束：成功 {result.completed_count}，失败 {result.failed_count}，"
             f"跳过 {result.skipped_count}，取消 {result.cancelled_count}"
@@ -4827,16 +4802,21 @@ class MainWindow(QMainWindow):
                 lines.append(f"- {item.source_path}: {item.message}")
             if len(failed_items) > 8:
                 lines.append(f"- 另有 {len(failed_items) - 8} 条失败记录未显示")
+        refresh_warning = ""
+        try:
+            self.refresh_operations()
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Failed to refresh operations after undo")
+            refresh_warning = f"操作记录刷新失败，实际恢复结果见上方明细和恢复日志：{exc}"
+            lines.extend(["", refresh_warning])
         message = "\n".join(lines)
         self.status_label.setText(f"批量撤销完成：成功 {result.completed_count} 条，失败 {result.failed_count} 条")
         if self._close_pending:
-            self.refresh_operations()
             return
-        if result.failed_count or warnings:
+        if result.failed_count or warnings or refresh_warning:
             QMessageBox.warning(self, "批量撤销完成", message)
         else:
             QMessageBox.information(self, "批量撤销完成", message)
-        self.refresh_operations()
 
     def reveal_selected_operation(self, location: str) -> None:
         operation = self.selected_operation()
