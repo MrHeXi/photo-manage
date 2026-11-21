@@ -232,7 +232,7 @@ class BrandingAssetTests(unittest.TestCase):
 
         self.assertIn("CreateFromDirectory", content)
         self.assertIn("build-info.json", content)
-        self.assertIn("-Wait -PassThru", content)
+        self.assertIn("Invoke-PackageSmokeTest", content)
         self.assertIn("PhotoManageGPT-safe-mode.cmd", content)
         self.assertIn("install-shortcut.ps1", content)
         self.assertIn("remove-shortcut.ps1", content)

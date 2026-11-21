@@ -19,23 +19,50 @@ function Assert-PackagePath {
     return $resolved
 }
 
+function Assert-PackageSourceState {
+    param([string]$ExpectedCommit)
+    $headOutput = & git rev-parse HEAD
+    if ($LASTEXITCODE -ne 0) { throw "Cannot resolve the current Git commit." }
+    if ((($headOutput | Out-String).Trim()) -ne $ExpectedCommit) {
+        throw "Git HEAD does not match the build identity. Rebuild before publishing."
+    }
+    $dirtyOutput = & git diff --name-only HEAD
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect the Git worktree." }
+    if ($dirtyOutput) { throw "Tracked source changed. Commit changes and rebuild before publishing." }
+    $untrackedSource = & git ls-files --others --exclude-standard -- photo_dedupe
+    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect untracked source files." }
+    if ($untrackedSource) { throw "New application source files are uncommitted. Commit changes and rebuild before publishing." }
+}
+
+function Invoke-PackageSmokeTest {
+    param(
+        [string]$Executable, [string]$WorkingDirectory, [string]$LogDirectory,
+        [string[]]$Arguments = @("--startup-smoke-test"), [int]$TimeoutMilliseconds = 60000
+    )
+    $stdout = Join-Path $LogDirectory "smoke.stdout.log"
+    $stderr = Join-Path $LogDirectory "smoke.stderr.log"
+    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+    try {
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            $process.Kill()
+            $null = $process.WaitForExit(5000)
+            throw "Startup smoke test timed out after $TimeoutMilliseconds ms. Logs: $stdout ; $stderr . Previous packages were retained."
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "Startup smoke test failed with exit code $($process.ExitCode). Logs: $stdout ; $stderr . Previous packages were retained."
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
 Push-Location $PSScriptRoot
 try {
     if (-not $SkipBuild) { & (Join-Path $PSScriptRoot "build.ps1") -SkipInstall:$SkipInstall }
     $python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
     $distDir = Join-Path $PSScriptRoot "dist\PhotoManageGPT"
     $metadata = Get-Content -LiteralPath (Join-Path $distDir "build-info.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-    $commitOutput = & git rev-parse HEAD
-    if ($LASTEXITCODE -ne 0) { throw "Cannot resolve current Git commit." }
-    if ($metadata.commit -ne (($commitOutput | Out-String).Trim())) {
-        throw "The existing build belongs to another commit. Rebuild before packaging."
-    }
-    $dirtyOutput = & git diff --name-only HEAD
-    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect current worktree." }
-    if ($dirtyOutput) { throw "Commit tracked changes before packaging a traceable release." }
-    $untrackedSource = & git ls-files --others --exclude-standard -- photo_dedupe
-    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect untracked source files." }
-    if ($untrackedSource) { throw "Commit new application source files before packaging a traceable release." }
+    Assert-PackageSourceState $metadata.commit
     $packageName = "PhotoManageGPT-$($metadata.build_id)-win64"
     if ($packageName -notmatch '^[A-Za-z0-9_.-]+$') { throw "Invalid build identity for a package filename." }
     $releaseDir = Assert-PackagePath (Join-Path $PSScriptRoot "release\$packageName")
@@ -53,8 +80,7 @@ try {
     $safeModeLauncher = "@echo off`r`nstart `"`" `"%~dp0PhotoManageGPT.exe`" --safe-mode`r`n"
     Set-Content -LiteralPath (Join-Path $stageDir "PhotoManageGPT-safe-mode.cmd") -Value $safeModeLauncher -Encoding ASCII
 
-    $smoke = Start-Process -FilePath (Join-Path $stageDir "PhotoManageGPT.exe") -ArgumentList "--startup-smoke-test" -WindowStyle Hidden -Wait -PassThru
-    if ($smoke.ExitCode -ne 0) { throw "Release startup smoke test failed with exit code $($smoke.ExitCode). Previous packages were retained." }
+    Invoke-PackageSmokeTest -Executable (Join-Path $stageDir "PhotoManageGPT.exe") -WorkingDirectory $stageDir -LogDirectory $stageRoot
     Invoke-PackageNative $python @("-m", "photo_dedupe", "--write-release-manifest", $stageDir)
     Invoke-PackageNative $python @("-m", "photo_dedupe.core.release_check", "--release-check", "--release-dir", $stageDir, "--require-build-info")
 
@@ -68,6 +94,7 @@ try {
     Invoke-PackageNative $python @("-m", "photo_dedupe.core.release_check", "--release-check", "--release-dir", $stageDir, "--zip-path", $stageZip, "--require-build-info")
 
     # Promotion occurs only after the directory, startup, archive and checksum pass.
+    Assert-PackageSourceState $metadata.commit
     try {
         Move-Item -LiteralPath $stageDir -Destination $releaseDir
         Move-Item -LiteralPath $stageZip -Destination $zipPath

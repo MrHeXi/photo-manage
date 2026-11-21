@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -182,6 +183,134 @@ class PowerShellBuildSafetyTests(unittest.TestCase):
             self.assertEqual(exe.read_bytes(), b"known-good old executable")
             self.assertFalse((root / "dist" / "backups").exists())
             self.assertIn("Cannot resolve", result.stderr)
+
+    def test_pyinstaller_path_isolation_excludes_external_dlls_and_restores_environment(self) -> None:
+        script = str(ROOT / "build.ps1").replace("'", "''")
+        python = sys.executable.replace("'", "''")
+        with tempfile.TemporaryDirectory() as folder:
+            contaminated = str(Path(folder) / "external-tools" / "Library" / "bin")
+            env = dict(os.environ, PATH=contaminated + os.pathsep + os.environ["PATH"])
+            definitions = (
+                "$ErrorActionPreference='Stop'; $tokens=$null; $parseErrors=$null; "
+                f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{script}',[ref]$tokens,[ref]$parseErrors); "
+                "$functions=$ast.FindAll({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] "
+                "-and $n.Name -in @('Invoke-CheckedNative','Invoke-IsolatedPyInstaller')},$true); "
+                "foreach($fn in $functions){Invoke-Expression $fn.Extent.Text}; $originalPath=$env:PATH; "
+            )
+            success = self.run_ps(
+                definitions
+                + f"Invoke-IsolatedPyInstaller '{python}' @('-c','import json,os; print(json.dumps(os.get_exec_path()))'); "
+                + "if($env:PATH -cne $originalPath){throw 'PATH restoration failed'}; 'RESTORED'",
+                env=env,
+            )
+            self.assertEqual(success.returncode, 0, success.stderr)
+            lines = success.stdout.strip().splitlines()
+            child_paths = json.loads(lines[0])
+            self.assertNotIn(contaminated, child_paths)
+            expected = {
+                os.path.normcase(str(Path(sys.executable).parent)),
+                os.path.normcase(sys.base_prefix),
+                os.path.normcase(str(Path(os.environ["SystemRoot"]) / "System32")),
+                os.path.normcase(os.environ["SystemRoot"]),
+            }
+            self.assertEqual({os.path.normcase(path) for path in child_paths}, expected)
+            self.assertEqual(lines[-1], "RESTORED")
+
+            failed = self.run_ps(
+                definitions
+                + f"try {{ Invoke-IsolatedPyInstaller '{python}' @('-c','raise SystemExit(29)'); throw 'Expected native failure' }} "
+                + "catch {if($_.Exception.Message -notmatch 'exit code 29'){throw}; 'FAILED_AS_EXPECTED'}; "
+                + "if($env:PATH -cne $originalPath){throw 'PATH restoration failed'}; 'RESTORED'",
+                env=env,
+            )
+            self.assertEqual(failed.returncode, 0, failed.stderr)
+            self.assertIn("FAILED_AS_EXPECTED", failed.stdout)
+            self.assertIn("RESTORED", failed.stdout)
+
+    def test_promotion_guard_rechecks_real_git_head_and_source_changes(self) -> None:
+        def git(root: Path, *args: str) -> str:
+            result = subprocess.run(
+                ["git", *args], cwd=root, capture_output=True, text=True, check=True, timeout=10,
+            )
+            return result.stdout.strip()
+
+        for filename, function in (
+            ("build.ps1", "Assert-BuildSourceState"),
+            ("package.ps1", "Assert-PackageSourceState"),
+        ):
+            with self.subTest(script=filename), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                source_dir = root / "photo_dedupe"
+                source_dir.mkdir()
+                tracked = source_dir / "main.py"
+                tracked.write_text("print('original')\n", encoding="utf-8")
+                git(root, "init", "--quiet")
+                git(root, "-c", "user.name=Build Test", "-c", "user.email=build@example.invalid", "add", ".")
+                git(root, "-c", "user.name=Build Test", "-c", "user.email=build@example.invalid", "commit", "--quiet", "-m", "initial")
+                expected_commit = git(root, "rev-parse", "HEAD")
+                source = str(ROOT / filename).replace("'", "''")
+                command = (
+                    "$ErrorActionPreference='Stop'; $tokens=$null; $parseErrors=$null; "
+                    f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{source}',[ref]$tokens,[ref]$parseErrors); "
+                    f"$fn=$ast.Find({{param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq '{function}'}},$true); "
+                    f"Invoke-Expression $fn.Extent.Text; {function} '{expected_commit}'; 'READY_TO_PROMOTE'"
+                )
+                # A screenshot outside application sources does not contaminate the build.
+                (root / "user-screenshot.png").write_bytes(b"preserve me")
+                clean = self.run_ps(command, cwd=root)
+                self.assertEqual(clean.returncode, 0, clean.stderr)
+                self.assertIn("READY_TO_PROMOTE", clean.stdout)
+
+                tracked.write_text("print('changed while compiling')\n", encoding="utf-8")
+                dirty = self.run_ps(command, cwd=root)
+                self.assertNotEqual(dirty.returncode, 0)
+                self.assertNotIn("READY_TO_PROMOTE", dirty.stdout)
+                self.assertIn("Tracked source changed", dirty.stderr)
+
+                tracked.write_text("print('original')\n", encoding="utf-8")
+                new_source = source_dir / "added.py"
+                new_source.write_text("print('new module')\n", encoding="utf-8")
+                untracked = self.run_ps(command, cwd=root)
+                self.assertNotEqual(untracked.returncode, 0)
+                self.assertNotIn("READY_TO_PROMOTE", untracked.stdout)
+                self.assertIn("uncommitted", untracked.stderr)
+
+                git(root, "add", "photo_dedupe")
+                git(root, "-c", "user.name=Build Test", "-c", "user.email=build@example.invalid", "commit", "--quiet", "-m", "new head")
+                changed_head = self.run_ps(command, cwd=root)
+                self.assertNotEqual(changed_head.returncode, 0)
+                self.assertNotIn("READY_TO_PROMOTE", changed_head.stdout)
+                self.assertIn("Git HEAD", changed_head.stderr)
+                self.assertEqual((root / "user-screenshot.png").read_bytes(), b"preserve me")
+
+    def test_smoke_wait_is_bounded_and_terminates_only_started_process(self) -> None:
+        for filename, function in (
+            ("build.ps1", "Invoke-BuildSmokeTest"), ("package.ps1", "Invoke-PackageSmokeTest"),
+        ):
+            with self.subTest(script=filename), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                child_script = root / "slow_smoke.py"
+                child_script.write_text("import os, time\nprint(os.getpid(), flush=True)\ntime.sleep(30)\n", encoding="utf-8")
+                script = str(ROOT / filename).replace("'", "''")
+                python = sys.executable.replace("'", "''")
+                location = str(root).replace("'", "''")
+                argument = ('"' + str(child_script) + '"').replace("'", "''")
+                command = (
+                    "$ErrorActionPreference='Stop'; $tokens=$null; $parseErrors=$null; "
+                    f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{script}',[ref]$tokens,[ref]$parseErrors); "
+                    f"$fn=$ast.Find({{param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq '{function}'}},$true); "
+                    f"Invoke-Expression $fn.Extent.Text; {function} -Executable '{python}' -WorkingDirectory '{location}' "
+                    f"-LogDirectory '{location}' -Arguments @('{argument}') -TimeoutMilliseconds 1000"
+                )
+                started = time.monotonic()
+                result = self.run_ps(command)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("timed out", result.stderr)
+                self.assertLess(time.monotonic() - started, 15)
+                child_pid = int((root / "smoke.stdout.log").read_text().strip())
+                check = self.run_ps(f"if(Get-Process -Id {child_pid} -ErrorAction SilentlyContinue){{exit 1}}")
+                self.assertEqual(check.returncode, 0, "Timed-out smoke test left its child running")
+                self.assertTrue((root / "smoke.stderr.log").exists())
 
 
 if __name__ == "__main__":
